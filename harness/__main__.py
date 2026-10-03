@@ -13,6 +13,7 @@ from harness.app import DEFAULT_DB_PATH, Harness
 from harness.audit.explain import explain as render_explain
 from harness.demo import run_demo
 from harness.planning.llm import OpenAIClient, ReplayClient
+from harness.policy.approvals import ApprovalAlreadyDecided, NotCurrentApprover, UnknownApproval
 from harness.world.receipts import record_receipt
 from harness.world.seed import FIXTURES
 
@@ -112,7 +113,11 @@ def approve(
         raise typer.Exit(code=1)
     harness = Harness(db)
     llm_client = _llm_client_for_cli()
-    harness.approve(approval_id, decided_by, llm_client)
+    try:
+        harness.approve(approval_id, decided_by, llm_client)
+    except (UnknownApproval, ApprovalAlreadyDecided, NotCurrentApprover) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     console.print(f"[green]Approved[/green] {approval_id} as {decided_by}.")
 
 
@@ -128,7 +133,11 @@ def reject(
         console.print(f"[red]No database at {db}. Run 'reset' first.[/red]")
         raise typer.Exit(code=1)
     harness = Harness(db)
-    harness.reject(approval_id, decided_by)
+    try:
+        harness.reject(approval_id, decided_by)
+    except (UnknownApproval, ApprovalAlreadyDecided, NotCurrentApprover) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     console.print(f"[yellow]Rejected[/yellow] {approval_id} as {decided_by}.")
 
 

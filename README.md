@@ -56,7 +56,7 @@ require you to manufacture it.
 All of them accept `--db <path>` (default `harness.db`); `reset --fixture` accepts any
 name in `harness/world/seed.py` (`scenario_a`, five `scenario_a_*` variants,
 `scenario_b_covers`, `scenario_b_shortage`). Each command is a single line with no
-trailing comment, safe to copy and paste directly into an interactive shell -- including
+trailing comment, safe to copy and paste directly into an interactive shell, including
 `zsh` (the macOS default), which, unlike `bash`, does not treat `#` as a comment starter
 in interactive mode by default, so a pasted trailing `# comment` becomes literal
 arguments instead of being ignored.
@@ -78,13 +78,13 @@ uv run pytest --cov=harness --cov-report=term-missing
 ```
 
 Plain `uv sync` (the "How to run" command above) does not include `dev`, and will
-actively remove it from an already-synced environment that had it -- if `uv run pytest`
+actively remove it from an already-synced environment that had it. If `uv run pytest`
 ever reports a `pytest` version other than what `uv sync --extra dev` just installed, or
 `--cov` comes back as an unrecognized argument, that's why: re-run `uv sync --extra dev`.
 
 No network calls anywhere in the suite (`FakeLLMClient` and `ReplayClient` only).
-`policy/`, `execution/`, `detection/`, `scheduling/`, and `audit/` (the five packages the
-assignment targets for coverage) are all at **100%** line coverage. Two gaps elsewhere are
+`policy/`, `execution/`, `detection/`, `scheduling/`, and `audit/` (the five core packages)
+are all at **100%** line coverage. Two gaps elsewhere are
 specifically documented and intentional, since they'd otherwise look like missed cases:
 `world/seed.py` (two unreachable defensive guards on fixture names) and `planning/llm.py`
 (`OpenAIClient`'s real-network branches, which the "no network in tests" rule forbids
@@ -104,18 +104,19 @@ One loop, seven replaceable stages, with one more that every single stage writes
   every stage above appends to: audit (append-only, the one thing nothing skips)
 ```
 
-`tick()` (`harness/app.py`) is the heartbeat: it runs due scheduled tasks, escalates
-overdue approvals, resumes any workflow a crash left mid-flight, resumes any approval a
-crash left decided but never executed, runs every detector, and plans for whatever's
-still unplanned, all scoped to "today", then advances the clock last. See **Notes** below
-for why last, not first.
+`tick()` (`harness/app.py`) is the heartbeat: it runs due scheduled tasks, resumes any
+workflow a crash left mid-flight, resumes any approval a crash left decided but never
+executed, runs every detector, plans for whatever's still unplanned, and escalates
+overdue approvals last, all scoped to "today", then advances the clock. See **Notes**
+below for why escalation runs last and the clock advances last, not first.
 
 Three layers:
 
 - **Pluggable** (swap freely, each behind its own registry): `detection/` (one class per
   detector), `context/` (one class per provider), `execution/workflows/` (one module per
   declared workflow), `planning/llm.py` (one class per LLM client).
-- **Core** (scenario-agnostic, never edited to add a scenario): `planning/planner.py` and
+- **Core** (scenario-agnostic; changes are listed under **What Scenario B required** and
+  the real-API bugs note below, never anything scenario-specific): `planning/planner.py` and
   `prompt.py` (the free-form reasoner), `policy/gate.py` and `approvals.py` (permissions,
   thresholds, escalation, the frozen plan), `execution/executor.py` and `engine.py` and
   `runner.py` (the one place tools actually run, the declared-workflow engine, the
@@ -241,8 +242,8 @@ never needed one), and the fixtures in `world/seed.py`. The "different user with
 scopes" (Omar Reyes, quality manager) was already seeded from the start.
 
 **Core files that changed, and why**: `detection/registry.py` and `context/registry.py`,
-one line each, adding the new detector/provider to their lists (the kind of change section
-3 of the assignment explicitly anticipates). `execution/args.py` / `catalog.py`, a fix to
+one line each, adding the new detector/provider to their lists (the kind of change Part 3
+of the assignment explicitly anticipates). `execution/args.py` / `catalog.py`, a fix to
 `flag_shortage` (see Notes). `app.py`, wiring the free-form runner into `approve()`, the
 one piece of orchestration deliberately left unfinished until Scenario B needed it.
 
@@ -271,16 +272,15 @@ not because Scenario B's own logic required anything scenario-specific in the co
 - **Arrival check timing**: scheduled at Supplier Z's own promised arrival date
   (2026-09-05 in the demo run, after escalation routes approval to Priya on 9/3 and Z's
   2-day lead time is measured from there), not literally "Tuesday" as the assignment's own
-  worked example says. Tuesday there is that example's own stand-in for "whenever the
-  replacement PO is promised to arrive"; this harness's numbers put the equivalent point
-  on a different day once escalation and lead time are accounted for. Checking at Tuesday
-  specifically would be checking after production order 4812 is already scheduled to
-  start (9/7), discovering a missed delivery too late to act on it. The demo doesn't pad
-  out extra ticks to reach a date with nothing left to show.
+  worked example says. Tuesday 9/8 is after production order 4812 already starts on 9/7,
+  so a check that specifically waited for Tuesday could only ever report the failure, not
+  catch it in time to act. The demo doesn't pad out extra ticks to reach a date with
+  nothing left to show.
 - **The stockout detector skips an inbound PO that's already been received in full when
   deciding whether coverage is thin-margin, but still counts its quantity toward the
-  balance.** `record_receipt()` never closes a PO's `open` status (section 5's receipts
-  table is deliberately a separate fact from the PO itself), and `on_hand` itself never
+  balance.** `record_receipt()` never closes a PO's `open` status (`erp_receipts` is
+  deliberately a separate fact from the PO itself, per `CLAUDE.md`'s own data model), and
+  `on_hand` itself never
   updates on a receipt either, so the PO's quantity has to keep counting toward the
   balance or real, already-delivered stock would vanish from the projection. But once a
   receipt confirms it, that PO is no longer the kind of unconfirmed promise thin-margin
@@ -293,7 +293,7 @@ not because Scenario B's own logic required anything scenario-specific in the co
   while "today" is still that day, which rules out advancing first. The second half
   (escalation after planning, not before) was a real bug, not a design choice: with
   escalation running first, a same-day approval didn't exist yet when that tick's own
-  check ran, so it only became visible to escalation on the *following* tick -- a full
+  check ran, so it only became visible to escalation on the *following* tick: a full
   extra day of Dana already being unreachable before the system noticed and routed around
   her, in a scenario whose premise is that the delay matters. Caught by checking the
   actual dated output against the assignment's own worked example (which cites the
@@ -310,7 +310,7 @@ not because Scenario B's own logic required anything scenario-specific in the co
   itself resolve the attention item. Found against the real API on Scenario B's shortage
   fixture, where a real model would sometimes compute the right answer (correctly
   recognizing a shortfall, in one case) and then act on it with a notification instead of
-  `flag_shortage` -- reasoning right, action wrong. On that one retryable rejection,
+  `flag_shortage`: reasoning right, action wrong. On that one retryable rejection,
   `handle_attention_item` re-runs `propose()` once with the rejection reason appended as
   an extra message, the same shape the planner's own invalid-output retry already uses.
   The first wording tried also offered the model "or propose NoAction" as an out, which
@@ -323,15 +323,16 @@ not because Scenario B's own logic required anything scenario-specific in the co
 - **A `NoAction` proposal gets the same kind of one-time retry, but only for a user who
   actually has a resolving tool available.** On the same covers fixture, a real model
   would sometimes reason "other released lots can cover this" and then propose `NoAction`
-  anyway from that -- confirming a fix is possible isn't the same as it happening, in
-  roughly a quarter of real-API runs in one batch. `handle_attention_item` now re-plans
+  anyway from that. Confirming a fix is possible isn't the same as it happening, and this
+  happened in roughly a quarter of real-API runs in one batch. `handle_attention_item` now re-plans
   once on a first-attempt `NoAction`, but only when `execution/catalog.py`'s
   `user_has_a_resolving_tool()` says the requester has at least one free-form tool with
   `resolves=True` they're scoped for. That guard exists because `NoAction` is also the
   correct, final answer in a real case already built: Dana's "recommend only" handoff
-  when a quality-hold shortage reaches purchasing (section 12, no declared workflow for
-  buying lot-tracked stock, PO tools workflow-only) -- she has no resolving free-form tool
-  at all, so retrying her would be pointless and risks pushing a real model toward
+  when a quality-hold shortage reaches purchasing (no declared workflow for buying
+  lot-tracked stock, PO tools workflow-only, per `CLAUDE.md`'s own tool catalog). She has
+  no resolving free-form tool at all, so retrying her would be pointless and risks pushing
+  a real model toward
   inventing an action it has no real way to take. A 20-run real-API batch after this fix:
   zero runs ended unresolved; the three where the model's first attempt was `NoAction`
   were all caught and corrected on the retry.

@@ -99,7 +99,7 @@ def get_approval(conn: sqlite3.Connection, approval_id: str) -> sqlite3.Row:
         "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
     ).fetchone()
     if row is None:
-        raise UnknownApproval(approval_id)
+        raise UnknownApproval(f"no approval {approval_id}")
     return row
 
 

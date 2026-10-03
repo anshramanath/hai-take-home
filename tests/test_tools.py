@@ -216,7 +216,7 @@ def test_reallocate_lot_precheck_rejects_wrong_part(make_harness):
         prod_order_id="4820",
         part_id="P-1180",
         remove=[AllocationEntry(lot_id="L-2093", qty=100)],
-        add=[AllocationEntry(lot_id="L-3000", qty=50)],  # L-3000 is part P-5500
+        add=[AllocationEntry(lot_id="L-3000", qty=100)],  # L-3000 is part P-5500
     )
     with pytest.raises(PrecheckFailed):
         execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-202")
@@ -248,6 +248,28 @@ def test_reallocate_lot_precheck_rejects_insufficient_free_qty(make_harness):
         execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-202")
 
 
+def test_reallocate_lot_precheck_rejects_partial_coverage(make_harness):
+    """A real model, on the shortage fixture, repeatedly proposed moving
+    only 90 of the 100 units an order needs, with no flag_shortage
+    alongside it. Nothing else validates sum(add) against sum(remove), so
+    the precheck has to: either a reallocation fully covers what it takes
+    off the source lot(s), or it shouldn't run at all.
+    """
+    h = make_harness("scenario_b_shortage")
+    tool = get_tool("reallocate_lot")
+    args = ReallocateLotArgs(
+        prod_order_id="4820",
+        part_id="P-1180",
+        remove=[AllocationEntry(lot_id="L-2093", qty=100)],
+        add=[AllocationEntry(lot_id="L-2115", qty=30), AllocationEntry(lot_id="L-2101", qty=60)],  # 90, not 100
+    )
+    with pytest.raises(PrecheckFailed):
+        execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-202")
+    assert h.conn.execute(
+        "SELECT qty FROM erp_lot_allocations WHERE lot_id = 'L-2093' AND prod_order_id = '4820'"
+    ).fetchone()[0] == 100  # untouched
+
+
 def test_reallocate_lot_precheck_rejects_missing_source_allocation(make_harness):
     h = make_harness("scenario_b_covers")
     tool = get_tool("reallocate_lot")
@@ -255,7 +277,7 @@ def test_reallocate_lot_precheck_rejects_missing_source_allocation(make_harness)
         prod_order_id="4831",  # 4831 is not allocated to L-2093
         part_id="P-1180",
         remove=[AllocationEntry(lot_id="L-2093", qty=100)],
-        add=[AllocationEntry(lot_id="L-2101", qty=70)],
+        add=[AllocationEntry(lot_id="L-2101", qty=100)],
     )
     with pytest.raises(PrecheckFailed):
         execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-202")

@@ -216,6 +216,21 @@ def _free_qty(db, lot_id: str) -> int:
 
 
 def _precheck_reallocate_lot(db, args: ReallocateLotArgs) -> None:
+    removed_total = sum(entry.qty for entry in args.remove)
+    added_total = sum(entry.qty for entry in args.add)
+    if added_total != removed_total:
+        # A reallocation either fully covers what it's taking off the
+        # source lot(s) or it shouldn't happen at all: moving less than
+        # removed_total would silently leave the order under-allocated,
+        # with nothing else in the harness noticing. Observed against a
+        # real model proposing exactly this (partial coverage, no
+        # flag_shortage) on the shortage fixture, most of the time.
+        raise PrecheckFailed(
+            f"reallocation moves {added_total} units but removes {removed_total}; "
+            "a reallocation must fully cover what it takes off the source lot(s) "
+            "(propose flag_shortage instead if nothing covers the full amount)"
+        )
+
     for entry in args.remove:
         row = db.execute(
             "SELECT qty FROM erp_lot_allocations WHERE lot_id = ? AND prod_order_id = ?",

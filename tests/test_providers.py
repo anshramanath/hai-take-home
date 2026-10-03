@@ -133,6 +133,38 @@ def test_quality_provider_computes_free_qty_for_shortage_fixture(make_harness):
     assert sum(released.values()) < 100  # short of 4820's 100-unit need
 
 
+def test_quality_provider_computes_the_coverage_check_fact_for_covers_fixture(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+
+    context = gather_context(h.conn, h.clock, omar, item)
+    coverage = next(r for r in context["quality"].records if r["type"] == "coverage_check")
+    assert coverage == {
+        "type": "coverage_check", "prod_order_id": "4820",
+        "required_qty": 100, "total_free_qty_available": 100, "shortfall": 0,
+    }
+
+
+def test_quality_provider_computes_the_coverage_check_fact_for_shortage_fixture(make_harness):
+    """Spelled out as a fact (section 8's pattern: the detector itself
+    hands the planner required_qty rather than raw inventory to subtract),
+    not left for the planner to add 60 + 30 and compare to 100 itself.
+    """
+    h = make_harness("scenario_b_shortage")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+
+    context = gather_context(h.conn, h.clock, omar, item)
+    coverage = next(r for r in context["quality"].records if r["type"] == "coverage_check")
+    assert coverage == {
+        "type": "coverage_check", "prod_order_id": "4820",
+        "required_qty": 100, "total_free_qty_available": 90, "shortfall": 10,
+    }
+
+
 def test_quality_provider_never_returns_the_unrelated_lot_tracked_noise_part(make_harness):
     """T9 (Tier 2): L-3000 is part P-5500, not P-1180; the released-lot
     query is scoped by the item's own part_id, so L-3000 must never

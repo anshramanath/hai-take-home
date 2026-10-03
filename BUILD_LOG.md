@@ -421,6 +421,62 @@ at the end of this file.
 
 ---
 
+## Phase 7: failure cases and test completion
+
+### What was built
+
+- `tests/test_requirements.py` (section 15.14): one test per assignment requirement, named
+  after it — `test_a1_...` through `test_a7_...` (the seven numbered behaviors from the
+  assignment's section 2), three Part 1 pluggability tests (a swapped `LLMClient`, a dummy
+  detector registered alongside the real ones, a dummy provider registered alongside the
+  real ones — each proving the registry pattern, not just asserting it), five Part 2 tests
+  (fixed step order enforced by `WorkflowRequest` having no `steps` field at all, a bounded
+  step rejecting two invalid choices in a row, every action step declaring a compensation,
+  resume-after-kill, version pinning), three Part 3 tests (a static grep proving
+  `planning/`, `policy/gate.py`, `policy/approvals.py`, and `audit/` never mention lots or
+  quality, Omar's and Dana's scopes genuinely differing, Scenario B running through the
+  literal same `propose`/`gate` functions Scenario A uses), and two permission-model tests
+  (providers return nothing to a scopeless user, `execute()` refuses a write without the
+  required scope).
+- A few small gaps in earlier phases' tests, closed rather than left for later: the
+  Scenario A `explain` test now checks for the actual generated PO id and the actual
+  scheduled-check date (not just supplier/PO names), closing out every item literally
+  listed in section 15.2's checklist; a new memory test plants a false fact ("S-Z is not
+  approved and has a 10-day lead time") and confirms the workflow's own ERP checks still
+  find the real S-Z regardless — the second half of 15.9's "a memory fact contradicting
+  live ERP data does not change gate or workflow results," which previously only had the
+  first half ("facts appear in the prompt as hints") under direct test.
+
+### Reasoning
+
+- **Most of section 16's "failure cases" list was already under test before this phase
+  started** — a byproduct of writing tests alongside the code that needed them in phases 2
+  through 6, rather than deferring verification to a dedicated end. No qualifying supplier,
+  over-limit routing, missing-scope blocks, crash-and-resume, duplicate-detection, tamper
+  rejection (on both the workflow and free-form paths), and arrival-not-received re-entry
+  all had tests already. Phase 7's actual new work was narrower than the phase name
+  suggests: the 15.14 module, plus closing the handful of specific sub-claims (an exact PO
+  id string, a date string, memory non-interference) that broader tests had covered in
+  spirit but not verified to the letter.
+- **`test_part3`'s static check scans for `lot` and `quality` as whole words** (`\blot\b`,
+  not a bare substring), checked against the actual files before writing the assertion —
+  a bare substring match would have false-positived on ordinary English ("a lot of") in a
+  docstring, which very nearly happened: two incidental matches turned up during phase 6
+  (an illustrative comment in `gate.py`, a docstring in `prompt.py`), both harmless prose
+  written before or without reference to Scenario B, but both reworded at the time rather
+  than left for this phase to trip over.
+- **The coverage report**: every one of the five 90%+ target packages — `policy/`,
+  `execution/`, `detection/`, `scheduling/`, `audit/` — is at exactly 100% line coverage,
+  with zero lines to justify. `context/` and `memory/` (not explicit targets) are also at
+  100%. The two remaining gaps are both already-documented and intentional: `world/seed.py`
+  at 96% (two unreachable defensive `AssertionError` guards on fixture-name branches,
+  flagged back in phase 1) and `planning/llm.py` at 72% (the real-network branches of
+  `OpenAIClient`, which section 15's own rule — "no network calls in tests" — forbids
+  exercising through pytest; validated by hand against the real API instead, repeatedly,
+  across phases 4 and 6).
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're

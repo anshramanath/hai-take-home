@@ -38,9 +38,16 @@ def test_explain_contains_the_whole_scenario_a_story_in_order(make_harness):
     h = make_harness("scenario_a")
     _run_scenario_a(h.conn, h.clock)
 
+    new_po_id, new_po_date = h.conn.execute(
+        "SELECT po_id, promised_date FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()
+
     lines = explain(h.conn)
     text = "\n".join(lines)
 
+    # Section 15.2's checklist: detection, M-001, E-002, S-Q rejection, S-W
+    # rejection, escalation to u-102, approval by u-102, created PO id,
+    # reduced PO-77812, notification, scheduled check date.
     for expected in [
         "detection",
         "M-001",
@@ -50,6 +57,9 @@ def test_explain_contains_the_whole_scenario_a_story_in_order(make_harness):
         "u-102",
         "S-Z",
         "PO-77812",
+        new_po_id,
+        new_po_date,
+        "notification",
     ]:
         assert expected in text, f"{expected!r} missing from explain output"
 

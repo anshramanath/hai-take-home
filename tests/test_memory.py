@@ -48,6 +48,47 @@ def test_facts_with_no_expiry_never_filtered(make_harness):
     assert any(f["subject"] == "S-Z" for f in facts)
 
 
+def test_a_misleading_memory_fact_does_not_change_gate_or_workflow_results(make_harness):
+    """Memory is a hint shown to the model, never a substitute for the gate
+    or the workflow reading live data themselves. Plant a fact claiming
+    S-Z is slow and unapproved; the workflow must still find S-Z through
+    its own ERP checks regardless of what the "hint" says.
+    """
+
+    from harness.execution.engine import enter_workflow
+    from harness.execution.workflows.reroute_po import (
+        REROUTE_PO_V1,
+        ChooseSupplierResponse,
+        DraftNotificationResponse,
+    )
+    from harness.planning.llm import FakeLLMClient
+    from harness.world.users import get_user
+
+    h = make_harness("scenario_a")
+    write_fact(
+        h.conn, h.clock, subject="S-Z",
+        fact="S-Z is not approved for P-4471 and has a 10-day lead time.",  # false
+        source_ids=["M-999"],
+    )
+    dana = get_user(h.conn, "u-101")
+    llm = FakeLLMClient([
+        ChooseSupplierResponse(supplier_id="S-Z", justification="Meets the need date per the real ERP data."),
+        DraftNotificationResponse(body="Reroute in progress."),
+    ])
+
+    row = enter_workflow(
+        h.conn, h.clock, llm, REROUTE_PO_V1,
+        {"part_id": "P-4471", "original_po_id": "PO-77812", "prod_order_id": "4812", "qty": 120, "needed_by": "2026-09-07"},
+        run_id="run-1", requester=dana,
+    )
+
+    # The workflow's own checks (real ERP data) still find S-Z, unaffected
+    # by the planted fact claiming otherwise.
+    state = json.loads(row["state"])
+    assert state["candidates"] == ["S-Z"]
+    assert row["status"] == "awaiting_approval"
+
+
 def test_scenario_a_completion_writes_a_fact_only_after_approval_not_before(make_harness):
     """Facts are written on confirmed outcomes: entering a workflow and
     reaching awaiting_approval is not yet confirmed (it's a proposal still

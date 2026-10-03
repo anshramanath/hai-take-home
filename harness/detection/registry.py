@@ -12,10 +12,11 @@ import uuid
 
 from harness.audit.log import log as audit_log
 from harness.detection.base import AttentionItem, DetectionContext
+from harness.detection.quality_hold import QualityHoldDetector
 from harness.detection.stockout import StockoutDetector
 from harness.scheduling.clock import Clock
 
-DETECTORS: list = [StockoutDetector()]
+DETECTORS: list = [StockoutDetector(), QualityHoldDetector()]
 
 
 def run_detectors(conn: sqlite3.Connection, clock: Clock) -> list[str]:

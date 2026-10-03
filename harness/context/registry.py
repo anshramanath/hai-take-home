@@ -13,11 +13,12 @@ from harness.context.base import ContextSlice, ProviderContext
 from harness.context.calendar import CalendarProvider
 from harness.context.erp import ErpProvider
 from harness.context.mail import MailProvider
+from harness.context.quality import QualityProvider
 from harness.detection.base import AttentionItem
 from harness.scheduling.clock import Clock
 from harness.world.users import User
 
-PROVIDERS: list = [ErpProvider(), MailProvider(), CalendarProvider()]
+PROVIDERS: list = [ErpProvider(), MailProvider(), CalendarProvider(), QualityProvider()]
 
 
 def gather_context(

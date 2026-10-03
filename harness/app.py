@@ -35,6 +35,7 @@ from harness.execution.engine import (
     resume_all,
     set_instance_status,
 )
+from harness.execution.runner import run_approved_plan
 from harness.memory.facts import facts_for_prompt, write_fact
 from harness.memory.runs import create_run, get_run, set_run_status, update_run_state
 from harness.planning.llm import LLMClient, OpenAIClient, ReplayClient
@@ -222,8 +223,15 @@ def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, ap
             set_run_status(conn, approval["run_id"], final_row["status"])
             if final_row["status"] == "completed":
                 _write_completion_fact(conn, clock, approval["run_id"])
-    # A free-form (workflow is None) approved plan's execution is phase 6's
-    # tool runner; nothing to do here yet for that path.
+    else:
+        # Free-form: the requester's own scopes govern execution, same as
+        # the workflow path's requester. The approval record doesn't carry
+        # requester_id directly; the run it belongs to does.
+        requester_id = get_run(conn, approval["run_id"])["user_id"]
+        final_status = run_approved_plan(
+            conn, clock, approval_id, requester_id=requester_id, run_id=approval["run_id"],
+        )
+        set_run_status(conn, approval["run_id"], final_status)
 
 
 def reject(conn: sqlite3.Connection, clock: Clock, *, approval_id: str, decided_by: str) -> None:

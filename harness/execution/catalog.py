@@ -257,9 +257,15 @@ def _compensation_args_reallocate_lot(args: ReallocateLotArgs, result: dict) -> 
 # flag_shortage / withdraw_flag
 
 
+def _resolve_purchasing_manager(db) -> str | None:
+    row = db.execute("SELECT user_id FROM users WHERE role = 'Purchasing Manager' LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
 def _run_flag_shortage(db, args: FlagShortageArgs, ctx: ToolContext) -> dict:
     item_id = f"AI-{uuid.uuid4().hex[:8].upper()}"
     dedupe_key = f"shortage:{args.part_id}:{args.prod_order_id}"
+    owner_id = _resolve_purchasing_manager(db)
     facts: dict[str, Any] = {
         "part_id": args.part_id,
         "prod_order_id": args.prod_order_id,
@@ -268,9 +274,9 @@ def _run_flag_shortage(db, args: FlagShortageArgs, ctx: ToolContext) -> dict:
     db.execute(
         "INSERT INTO attention_items (item_id, dedupe_key, detector, owner_id, summary, facts, "
         "status, created_at) VALUES (?, ?, 'flag_shortage', ?, ?, ?, 'open', ?)",
-        (item_id, dedupe_key, args.owner_id, args.summary, json.dumps(facts), ctx.today.isoformat()),
+        (item_id, dedupe_key, owner_id, args.summary, json.dumps(facts), ctx.today.isoformat()),
     )
-    return {"item_id": item_id, "dedupe_key": dedupe_key}
+    return {"item_id": item_id, "dedupe_key": dedupe_key, "owner_id": owner_id}
 
 
 def _compensation_args_flag_shortage(args: FlagShortageArgs, result: dict) -> WithdrawFlagArgs:

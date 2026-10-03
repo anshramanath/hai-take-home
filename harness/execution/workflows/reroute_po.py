@@ -263,13 +263,19 @@ REROUTE_PO_V1 = WorkflowDefinition(
     name="reroute_po",
     version=1,
     description=(
-        "Use when a part's current supplier shipment is delayed or at risk and a "
-        "production order depends on it arriving in time. Reroutes the at-risk quantity "
-        "to an approved alternate supplier: confirms the alternate is approved and can "
-        "meet the need date, creates a replacement PO, reduces the original PO by the "
-        "rerouted quantity, notifies production, and schedules a check that the "
-        "replacement actually arrives. Do not propose this for a part that is not "
-        "genuinely at risk, or when no production order depends on the delayed PO."
+        "Use only when there is an existing open purchase order for the part (a real "
+        "original_po_id already in the ERP) whose promised delivery is at risk or confirmed "
+        "delayed by the supplier itself (for example, a supplier email reporting a slipped "
+        "ship date) and a production order depends on that purchase order arriving in time. "
+        "Reroutes the at-risk quantity to an approved alternate supplier: confirms the "
+        "alternate is approved and can meet the need date, creates a replacement PO, "
+        "reduces the original PO by the rerouted quantity, notifies production, and "
+        "schedules a check that the replacement actually arrives.\n\n"
+        "Does NOT apply when there is no existing purchase order to reroute: a lot already "
+        "received into inventory being on quality hold, or any situation where the fix is "
+        "reallocating stock you already have rather than a supplier's shipment, is a "
+        "different kind of problem and should get a free-form plan instead, never this "
+        "workflow with a guessed or repurposed original_po_id."
     ),
     params_model=RerouteParams,
     steps=(

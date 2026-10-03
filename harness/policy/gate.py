@@ -70,8 +70,8 @@ def qualifying_approver(conn: sqlite3.Connection, start: User, value: float) -> 
 
 def plan_value(steps: list[ToolCall]) -> float:
     """Sum of every step's dollar value, for steps whose tool declares one.
-    Tools without a `value` (reallocate_lot, notify_user, ...) contribute
-    nothing and so never trigger the threshold rule.
+    A tool with no `value` contributes nothing and so never triggers the
+    threshold rule.
     """
 
     total = 0.0

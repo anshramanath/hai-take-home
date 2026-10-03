@@ -356,6 +356,71 @@ at the end of this file.
 
 ---
 
+## Phase 6: Scenario B
+
+### What was built
+
+- `harness/detection/quality_hold.py`: `QualityHoldDetector` — for each allocation on a lot
+  with status `hold`, raises an item if the production order it's allocated to starts within
+  3 days. Owner resolves to the lot's `hold_placed_by`, falling back to role `Quality
+  Manager`, the same two-tier pattern `StockoutDetector` already used.
+- `harness/context/quality.py`: `QualityProvider` — the held lot, its allocations, the
+  affected production order, and every released lot of the same part with free quantity
+  computed. Registered into `detection/registry.py` and `context/registry.py` alongside the
+  existing ones.
+- `harness/execution/runner.py`: the free-form tool runner, the piece deliberately deferred
+  in phase 4. Executes an approved `ToolPlan`'s steps in whatever order the plan says
+  (no fixed order to enforce, unlike the workflow engine), through the same
+  `executor.execute()`/`compensate()` the workflow engine uses. On a step's failure,
+  backs out completed steps in reverse. Wired into `app.py`'s `approve()` as the
+  `else` branch alongside the existing workflow path.
+- A fix to a phase 2 tool: `flag_shortage` no longer takes a caller-supplied `owner_id`;
+  it resolves "a Purchasing Manager" itself, the same role-fallback every detector uses.
+
+### Reasoning
+
+- **Scenario B genuinely required zero edits to `planner.py`, `prompt.py` (beyond a
+  generality fix, see below), `policy/gate.py`, or `audit/`** — verified with `git diff
+  --stat` against those files after the phase, not just asserted. Only `detection/registry.py`
+  and `context/registry.py` changed, to add the new detector/provider to their lists — both
+  explicitly anticipated by section 3's framing of what Scenario B would need (section 3:
+  "quality/lot data, a new detector, a new context provider... a different user with
+  different scopes"). The "different user" (Omar, u-202) needed no changes either — it was
+  seeded correctly back in phase 1, anticipating this.
+- **`flag_shortage`'s `owner_id` moved from a caller-supplied argument to something the
+  tool resolves itself.** Found while actually wiring the free-form path, not anticipated in
+  advance: a free-form planner has no prompt content that would tell it Dana's internal
+  `user_id` is `"u-101"` — asking it to supply `owner_id` was asking it to invent an
+  unreachable fact. Section 12's own phrasing ("creates an attention item owned by a
+  Purchasing Manager") already frames ownership resolution as the tool's job, not the
+  caller's, so this is a correction of a phase 2 oversight, not a Scenario-B-specific
+  special case.
+- **Two real prompt-quality gaps, found only by actually running Scenario B against a real
+  model, not by reasoning about the prompt in advance:**
+  1. Given only `reroute_po` in its catalog and a quality-hold attention item, gpt-4o-mini
+     proposed entering `reroute_po` anyway, inventing `original_po_id: "4820"` by repurposing
+     the production order's own id. The fix was sharpening `reroute_po`'s own description
+     (in `execution/workflows/reroute_po.py`, which is already scenario-A-specific, so this
+     doesn't touch the "no scenario-specific wording" constraint on `planning/`) to state
+     plainly what it requires (a real, existing PO) and what it explicitly excludes (a lot
+     on hold, or any fix that's reallocating stock rather than ordering more) — a one-line
+     "don't propose this" clause was not enough; an explicit contrast with the
+     superficially-similar wrong case was.
+  2. `QualityProvider` originally exposed both a released lot's raw `qty` and its computed
+     `free_qty`. The model used the raw `qty` (the lot's full size) instead of `free_qty`
+     (what's actually available) when building a `reallocate_lot` call — a real mistake,
+     caught cleanly by `reallocate_lot`'s own precheck with zero bad writes, but avoidable
+     at the source. Fixed by dropping the raw `qty` from that record entirely: the only
+     number relevant to a reallocation decision is what's free, so showing the ambiguous one
+     alongside it was inviting exactly this error.
+- **The free-form runner's failure-path status is `"compensated"` even when zero steps had
+  completed yet** (the first step itself failed precheck). This mirrors the workflow
+  engine's own `_compensate_all`, which does the same thing unconditionally — kept
+  consistent across both paths rather than introducing a "failed vs. compensated" distinction
+  only one of them makes.
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're
@@ -396,3 +461,12 @@ silently:
     in the schema's original field list (phase 5) — needed once both a detector and the
     arrival-check handler could raise an item in the same tick; `tick()` plans every `open`
     item rather than only the ones its own `run_detectors` call returned.
+12. **`flag_shortage` resolves its own `owner_id`** instead of taking it as a caller-supplied
+    argument (phase 6) — a free-form planner has no way to know an internal `user_id` for
+    "the Purchasing Manager" from context alone.
+13. **`reroute_po`'s workflow description explicitly excludes quality-hold-shaped
+    problems**, not just positively describing when it applies (phase 6) — a real model
+    otherwise force-fits a superficially-similar attention item into the one workflow it's
+    shown, inventing a parameter value to make it fit.
+14. **`QualityProvider` exposes only a released lot's `free_qty`, not its raw total `qty`**
+    (phase 6) — showing both invited a real model to reallocate against the wrong number.

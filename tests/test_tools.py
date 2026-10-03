@@ -373,14 +373,16 @@ def test_withdraw_flag_compensates_flag_shortage(make_harness):
     h = make_harness("scenario_b_shortage")
     tool = get_tool("flag_shortage")
     args = FlagShortageArgs(
-        part_id="P-1180", prod_order_id="4820", owner_id="u-101", qty_short=10, summary="short by 10"
+        part_id="P-1180", prod_order_id="4820", qty_short=10, summary="short by 10"
     )
     c = ctx(step="flag")
     result = execute(h.conn, h.clock, tool, args, c, run_id="run-1", actor="test", requester_id="u-202")
     item_id = result["item_id"]
-    assert h.conn.execute(
-        "SELECT status FROM attention_items WHERE item_id = ?", (item_id,)
-    ).fetchone()[0] == "open"
+    row = h.conn.execute(
+        "SELECT status, owner_id FROM attention_items WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    assert row[0] == "open"
+    assert row[1] == "u-101"  # resolved by role, not supplied by the caller
 
     compensate(h.conn, h.clock, tool, args, result, c, run_id="run-1", actor="test", requester_id="u-202")
 

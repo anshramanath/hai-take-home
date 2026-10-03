@@ -99,11 +99,18 @@ class ReallocateLotArgs(BaseModel):
 
 
 class FlagShortageArgs(BaseModel):
+    """No `owner_id`: section 12 frames flag_shortage as creating an item
+    "owned by a Purchasing Manager" — resolving who that is is the tool's
+    job, the same role-based fallback every detector uses, not something
+    the caller supplies. A free-form planner has no reliable way to know
+    an internal user_id for "whoever the purchasing manager is" from
+    context alone.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     part_id: str
     prod_order_id: str
-    owner_id: str
     qty_short: int = Field(gt=0)
     summary: str
 

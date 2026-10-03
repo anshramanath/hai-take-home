@@ -167,6 +167,104 @@ def test_a_new_dependent_po_after_a_reroute_gets_a_new_dedupe_key(make_harness):
     assert "stockout:P-4471:4812:PO-NEWZ" in new_keys
 
 
+# ---------------------------------------------------------------------------
+# QualityHoldDetector (Scenario B)
+
+
+def test_quality_hold_fires_for_l2093_4820_within_three_days(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+
+    row = h.conn.execute(
+        "SELECT owner_id, facts FROM attention_items WHERE dedupe_key = 'quality_hold:L-2093:4820'"
+    ).fetchone()
+    assert row is not None
+    assert row["owner_id"] == "u-202"  # hold_placed_by
+    facts = json.loads(row["facts"])
+    assert facts["part_id"] == "P-1180"
+    assert facts["qty"] == 100
+
+
+def test_quality_hold_does_not_fire_for_4831_too_far_out(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key LIKE 'quality_hold:%:4831'"
+    ).fetchone()[0] == 0
+
+
+def test_quality_hold_does_not_fire_for_released_lots(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+
+    # L-2115 (released) is allocated to 4831; neither its released status
+    # nor 4831's distance should ever raise an item for it.
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key LIKE 'quality_hold:L-2115:%'"
+    ).fetchone()[0] == 0
+
+
+def test_quality_hold_owner_falls_back_to_role_when_hold_placed_by_missing(make_harness):
+    h = make_harness("scenario_b_covers")
+    h.conn.execute("UPDATE erp_lots SET hold_placed_by = NULL WHERE lot_id = 'L-2093'")
+    h.conn.commit()
+
+    run_detectors(h.conn, h.clock)
+
+    owner = h.conn.execute(
+        "SELECT owner_id FROM attention_items WHERE dedupe_key = 'quality_hold:L-2093:4820'"
+    ).fetchone()[0]
+    assert owner == "u-202"  # the only seeded Quality Manager
+
+
+def test_quality_hold_skips_an_allocation_to_a_nonexistent_order(make_harness):
+    h = make_harness("scenario_b_covers")
+    h.conn.execute(
+        "INSERT INTO erp_lot_allocations (lot_id, prod_order_id, qty) VALUES ('L-2093', 'NO-SUCH-ORDER', 1)"
+    )
+    h.conn.commit()
+
+    # Must not raise despite the dangling allocation.
+    run_detectors(h.conn, h.clock)
+
+
+def test_quality_hold_skips_an_order_that_is_not_planned(make_harness):
+    h = make_harness("scenario_b_covers")
+    h.conn.execute("UPDATE erp_production_orders SET status = 'completed' WHERE prod_order_id = '4820'")
+    h.conn.commit()
+
+    run_detectors(h.conn, h.clock)
+
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key = 'quality_hold:L-2093:4820'"
+    ).fetchone()[0] == 0
+
+
+def test_quality_hold_skips_a_held_lot_allocated_outside_the_horizon(make_harness):
+    h = make_harness("scenario_b_covers")
+    # L-2115 is released in the base fixture; put it on hold and allocate
+    # it to 4831 (starts 2026-09-15), well outside the 3-day horizon.
+    h.conn.execute("UPDATE erp_lots SET status = 'hold', hold_placed_by = 'u-202' WHERE lot_id = 'L-2115'")
+    h.conn.commit()
+
+    run_detectors(h.conn, h.clock)
+
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key = 'quality_hold:L-2115:4831'"
+    ).fetchone()[0] == 0
+
+
+def test_quality_hold_dedupes_on_second_run(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+    run_detectors(h.conn, h.clock)
+
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key = 'quality_hold:L-2093:4820'"
+    ).fetchone()[0] == 1
+
+
 def test_detectors_run_after_a_tool_writes_to_an_erp_table(make_harness):
     h = make_harness("scenario_a")
     run_detectors(h.conn, h.clock)  # baseline: the original item is now known

@@ -1,8 +1,8 @@
 """Builds the planner's prompt from the attention item, the gathered
 context, persistent memory hints, and catalogs built from the live
-registries — never hardcoded, and never containing any scenario-specific
-wording (the planner must work for Scenario A's reroute and Scenario B's
-quality hold without being told which one it is).
+registries — never hardcoded, and never containing any wording specific to
+one scenario (the planner must work for whatever attention item it's
+handed without being told in advance what kind of problem it is).
 """
 
 from __future__ import annotations
@@ -28,10 +28,16 @@ SYSTEM_PROMPT = (
     "If one of the available_workflows fits the situation, propose it by name with the "
     "exact parameters its params_schema requires; a declared workflow's own fixed steps "
     "handle the actual response, so your job for a workflow is only to decide it applies "
-    "and supply correct parameters, not to plan the steps yourself. Use a free-form plan "
-    "of tool calls only when no declared workflow fits. Propose no action when nothing in "
-    "the context indicates the detected risk is real. Only use facts present in the "
-    "context; never invent record ids, suppliers, or values."
+    "and supply correct parameters, not to plan the steps yourself. Only propose a "
+    "workflow if the attention item's own facts and the gathered context actually contain "
+    "real values for every one of its required parameters — never invent, guess, or repurpose "
+    "an unrelated id (such as a production order id) to fill a parameter the situation does "
+    "not actually provide. A workflow's description tells you the kind of problem it "
+    "handles; if this attention item is a different kind of problem, it does not apply, no "
+    "matter how superficially similar the data looks. Use a free-form plan of tool calls "
+    "whenever no declared workflow genuinely fits. Propose no action when nothing in the "
+    "context indicates the detected risk is real. Only use facts present in the context; "
+    "never invent record ids, suppliers, or values."
 )
 
 

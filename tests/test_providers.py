@@ -98,6 +98,56 @@ def test_record_ids_match_returned_records_and_are_audited(make_harness):
     assert set(detail["record_ids"]["erp"]) == set(context["erp"].record_ids)
 
 
+def _scenario_b_item(conn):
+    row = conn.execute(
+        "SELECT * FROM attention_items WHERE dedupe_key = 'quality_hold:L-2093:4820'"
+    ).fetchone()
+    return AttentionItem(
+        detector=row["detector"], dedupe_key=row["dedupe_key"], owner_id=row["owner_id"],
+        summary=row["summary"], facts=json.loads(row["facts"]),
+    )
+
+
+def test_quality_provider_computes_free_qty_for_covers_fixture(make_harness):
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+
+    context = gather_context(h.conn, h.clock, omar, item)
+    released = {r["lot_id"]: r["free_qty"] for r in context["quality"].records if r["type"] == "released_lot"}
+
+    assert released == {"L-2101": 70, "L-2115": 30}
+
+
+def test_quality_provider_computes_free_qty_for_shortage_fixture(make_harness):
+    h = make_harness("scenario_b_shortage")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+
+    context = gather_context(h.conn, h.clock, omar, item)
+    released = {r["lot_id"]: r["free_qty"] for r in context["quality"].records if r["type"] == "released_lot"}
+
+    assert released == {"L-2101": 60, "L-2115": 30}
+    assert sum(released.values()) < 100  # short of 4820's 100-unit need
+
+
+def test_quality_provider_empty_without_lot_read_scope(make_harness):
+    from dataclasses import replace
+
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+    scopeless = replace(omar, scopes=frozenset())
+
+    context = gather_context(h.conn, h.clock, scopeless, item)
+
+    assert context["quality"].records == []
+    assert context["quality"].record_ids == []
+
+
 def test_backup_approvers_calendar_is_not_exposed_to_the_planner(make_harness):
     """The backup approver's calendar is read by policy.approvals during
     escalation, directly against cal_events, never through

@@ -283,6 +283,21 @@ not because Scenario B's own logic required anything scenario-specific in the co
   insisting the retry include a real resolving step (never suggesting the model reconsider
   whether to act at all) took a 12-run real-API batch from several unresolved cases to
   zero. Every other rejection reason still reports and stops, exactly as before.
+- **A `NoAction` proposal gets the same kind of one-time retry, but only for a user who
+  actually has a resolving tool available.** On the same covers fixture, a real model
+  would sometimes reason "other released lots can cover this" and then propose `NoAction`
+  anyway from that -- confirming a fix is possible isn't the same as it happening, in
+  roughly a quarter of real-API runs in one batch. `handle_attention_item` now re-plans
+  once on a first-attempt `NoAction`, but only when `execution/catalog.py`'s
+  `user_has_a_resolving_tool()` says the requester has at least one free-form tool with
+  `resolves=True` they're scoped for. That guard exists because `NoAction` is also the
+  correct, final answer in a real case already built: Dana's "recommend only" handoff
+  when a quality-hold shortage reaches purchasing (section 12, no declared workflow for
+  buying lot-tracked stock, PO tools workflow-only) -- she has no resolving free-form tool
+  at all, so retrying her would be pointless and risks pushing a real model toward
+  inventing an action it has no real way to take. A 20-run real-API batch after this fix:
+  zero runs ended unresolved; the three where the model's first attempt was `NoAction`
+  were all caught and corrected on the retry.
 - **`promised_date` is a fact `create_po` sets at execution, not a value frozen into the
   plan at approval.** The frozen plan carries what a human actually approved: supplier,
   quantity, price, and a `needed_by` deadline. Nobody approves a specific promised date

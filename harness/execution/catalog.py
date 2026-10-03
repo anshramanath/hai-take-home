@@ -23,6 +23,7 @@ from harness.execution.args import (
     WithdrawFlagArgs,
 )
 from harness.execution.tools import PrecheckFailed, Tool, ToolContext
+from harness.world.users import User, missing_scopes
 
 
 class UnknownTool(Exception):
@@ -481,3 +482,24 @@ def get_tool(name: str) -> Tool:
 
 def all_tools() -> list[Tool]:
     return list(TOOLS.values())
+
+
+def user_has_a_resolving_tool(user: User) -> bool:
+    """Whether at least one free-form-usable, scope-satisfied tool this
+    user could actually propose has `resolves=True`. Used to decide
+    whether a NoAction proposal deserves a second look: for a user with
+    no resolving tool available at all (missing every relevant scope, with
+    every write tool either workflow-only or non-resolving), NoAction is
+    the genuinely correct, expected outcome -- retrying it would be
+    pointless at best and could push a real model toward inventing an
+    action it has no real way to take.
+    """
+
+    for tool in TOOLS.values():
+        if tool.allowed_in is not None:
+            continue
+        if not tool.resolves:
+            continue
+        if not missing_scopes(user, tool.required_scopes):
+            return True
+    return False

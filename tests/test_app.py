@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from harness.app import tick
 from harness.planning.llm import FakeLLMClient, LLMOutputInvalid
-from harness.planning.models import PlannerOutput, ToolCall, ToolPlan
+from harness.planning.models import NoAction, PlannerOutput, ToolCall, ToolPlan
 
 
 def test_a_planner_failure_marks_the_run_failed_without_crashing_the_tick(make_harness):
@@ -132,4 +132,64 @@ def test_gate_allowed_is_audited_for_a_straightforward_free_form_plan(make_harne
 
     events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq").fetchall()]
     assert "gate.allowed" in events
+
+
+def _no_action_proposal(note: str) -> PlannerOutput:
+    return PlannerOutput(proposal=NoAction(
+        kind="none",
+        reasoning=f"Other lots can cover this ({note}), so no action is needed.",
+    ))
+
+
+def test_a_no_action_is_reproposed_once_when_the_user_has_a_resolving_tool_and_can_succeed(make_harness):
+    """A real model, on the covers fixture, repeatedly reasoned its way to
+    'other lots can cover this' and then proposed NoAction anyway --
+    confirming a fix is possible is not the same as it happening. Omar
+    has erp:lot:allocate, so this is retried once.
+    """
+    h = make_harness("scenario_b_covers")
+    llm = FakeLLMClient([_no_action_proposal("first attempt"), _flag_shortage_proposal()])
+
+    result = tick(h.conn, h.clock, llm)
+
+    assert result["runs"]
+    run = h.conn.execute("SELECT status FROM runs WHERE run_id = ?", (result["runs"][0],)).fetchone()
+    assert run["status"] == "awaiting_approval"
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq").fetchall()]
+    assert events.count("planner.proposed") == 2
+    assert "planner.no_action_retried" in events
+
+
+def test_a_no_action_is_accepted_after_exactly_one_retry_if_reconfirmed(make_harness):
+    h = make_harness("scenario_b_covers")
+    llm = FakeLLMClient([_no_action_proposal("first attempt"), _no_action_proposal("second attempt")])
+
+    result = tick(h.conn, h.clock, llm)
+
+    assert result["runs"]
+    run = h.conn.execute("SELECT status FROM runs WHERE run_id = ?", (result["runs"][0],)).fetchone()
+    assert run["status"] == "closed"
+    detail_rows = [r[0] for r in h.conn.execute(
+        "SELECT detail FROM audit_log WHERE event = 'planner.proposed' ORDER BY seq"
+    ).fetchall()]
+    assert len(detail_rows) == 2  # original attempt + exactly one retry, never a third
+
+
+def test_a_no_action_is_never_retried_for_a_user_with_no_resolving_tool(make_harness):
+    """Dana's 'recommend only' handoff (test_scenario_b.py) is the real
+    case this guards: she has no resolving tool available at all (no
+    erp:lot:allocate, no purchasing:flag, every PO tool workflow-only), so
+    her NoAction is the correct, final answer -- not something to retry.
+    """
+    h = make_harness("scenario_a")
+    llm = FakeLLMClient([_no_action_proposal("first attempt")])
+
+    result = tick(h.conn, h.clock, llm)
+
+    assert result["runs"]
+    run = h.conn.execute("SELECT status FROM runs WHERE run_id = ?", (result["runs"][0],)).fetchone()
+    assert run["status"] == "closed"
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq").fetchall()]
+    assert events.count("planner.proposed") == 1
+    assert "planner.no_action_retried" not in events
     assert "gate.blocked" not in events

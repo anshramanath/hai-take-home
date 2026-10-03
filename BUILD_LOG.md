@@ -824,7 +824,44 @@ asserted the *caller* audited its result. Fixed in the same change, since the re
 feature needed this logging anyway to be auditable; `test_gate_allowed_is_audited_for_a_
 straightforward_free_form_plan` closes the gap.
 
-All five target packages remain at 100% line coverage; 264 tests pass (5 more than before
+**A third, separate failure mode, found while re-verifying all of the above "works with
+the real LLM" end to end:** on the covers fixture -- where a lot combination genuinely
+*can* cover the order -- a real model would sometimes propose `NoAction`, with its own
+`reasoning` field making the logical error explicit. One actual example, verbatim:
+*"The quantity of components can be fulfilled from other released lots (L-2115 and
+L-2101). Therefore, no action is needed."* Confirming a fix is possible and concluding
+nothing needs to happen are not the same thing, but the model treated them as one; a
+20-run batch measured this at 5/20 (25%), well above noise.
+
+The fix is the same shape as the gate-rejection retry above, but `NoAction` never reaches
+`gate()` at all (it returns immediately), so it needed its own trigger. The first attempt
+at a trigger -- retry every `NoAction`, unconditionally -- broke four existing tests
+immediately, for a real reason, not a fixture-maintenance annoyance: `NoAction` is also
+the *correct* answer in a case already built, Dana's "recommend only" handoff when a
+quality-hold shortage reaches purchasing (section 12 -- no declared workflow for buying
+lot-tracked stock, PO tools workflow-only, so her agent genuinely has nothing it can do).
+Retrying her would waste a call at best and, against a real model, risks pushing it to
+invent an action it has no real way to take just to avoid the word "no."
+
+The actual fix needed a way to tell these two cases apart without any scenario-specific
+logic in `app.py` (invariant 10). The distinguishing fact turned out to already exist in
+the tool catalog: Omar (quality manager) has `erp:lot:allocate`, so `reallocate_lot`
+(`resolves=True`, free-form-usable) is available to him; Dana has neither
+`erp:lot:allocate` nor `purchasing:flag`, and every PO tool is workflow-only regardless of
+her scopes, so *no* resolving free-form tool exists for her at all. `execution/catalog.py`
+gained `user_has_a_resolving_tool(user)`, checking exactly that generically (iterates every
+tool, filters to free-form-usable and scope-satisfied, returns whether any has
+`resolves=True`), and the retry only fires when it's `True`. Re-verified: a 20-run
+real-API batch on the covers fixture came back 0/20 unresolved, with the 3 runs where the
+model's first attempt actually was `NoAction` all corrected on the single retry.
+`test_a_no_action_is_reproposed_once_when_the_user_has_a_resolving_tool_and_can_succeed`,
+`test_a_no_action_is_accepted_after_exactly_one_retry_if_reconfirmed`, and
+`test_a_no_action_is_never_retried_for_a_user_with_no_resolving_tool` (`test_app.py`) cover
+all three branches with `FakeLLMClient`; `test_user_has_a_resolving_tool_true_for_a_
+quality_manager` / `..._false_for_a_purchasing_manager_without_lot_scopes` (`test_tools.py`)
+cover the catalog function directly.
+
+All five target packages remain at 100% line coverage; 269 tests pass (10 more than before
 this phase).
 
 ---

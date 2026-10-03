@@ -15,9 +15,10 @@ from harness.execution.args import (
     ReducePoArgs,
     ScheduleCheckArgs,
 )
-from harness.execution.catalog import all_tools, get_tool
+from harness.execution.catalog import all_tools, get_tool, user_has_a_resolving_tool
 from harness.execution.executor import compensate, execute
 from harness.execution.tools import PrecheckFailed, ToolContext
+from harness.world.users import get_user
 
 
 def ctx(run_id: str = "run-1", step: str = "step-1", today: date = date(2026, 9, 2)) -> ToolContext:
@@ -32,6 +33,30 @@ def ctx(run_id: str = "run-1", step: str = "step-1", today: date = date(2026, 9,
 def test_input_schema_rejects_malformed_args(tool):
     with pytest.raises(ValidationError):
         tool.input_schema.model_validate({"this_field_does_not_exist": True})
+
+
+# ---------------------------------------------------------------------------
+# resolves / user_has_a_resolving_tool
+
+
+def test_user_has_a_resolving_tool_true_for_a_quality_manager(make_harness):
+    """Omar has erp:lot:allocate, so reallocate_lot (resolves=True,
+    free-form) is available to him.
+    """
+    h = make_harness("scenario_b_covers")
+    omar = get_user(h.conn, "u-202")
+    assert user_has_a_resolving_tool(omar) is True
+
+
+def test_user_has_a_resolving_tool_false_for_a_purchasing_manager_without_lot_scopes(make_harness):
+    """Dana's only free-form options are notify_user/send_correction
+    (resolves=False); every PO tool is workflow-only regardless of her
+    scopes. This is exactly why her 'recommend only' NoAction on the
+    shortage handoff (test_scenario_b.py) must not be retried.
+    """
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    assert user_has_a_resolving_tool(dana) is False
 
 
 # ---------------------------------------------------------------------------

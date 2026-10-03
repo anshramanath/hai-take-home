@@ -28,6 +28,7 @@ from harness.context.registry import gather_context
 from harness.detection.base import AttentionItem
 from harness.detection.registry import run_detectors
 from harness.execution import workflows as _workflows  # noqa: F401  (registers every workflow definition)
+from harness.execution.catalog import user_has_a_resolving_tool
 from harness.execution.engine import (
     enter_workflow,
     get_definition,
@@ -132,6 +133,30 @@ def handle_attention_item(
             return run_id
 
         if isinstance(proposal, NoAction):
+            if attempt == 0 and user_has_a_resolving_tool(user):
+                # A real model, more than once, reasoned its way to "another
+                # lot/resource could cover this" and then concluded no action
+                # was needed from that -- confirming a fix is possible is not
+                # the same as it having happened. One retry, same shape and
+                # same "max 1, logged" limit as the gate-rejection retry
+                # below, since the detector raising this item at all is
+                # itself evidence something is likely real.
+                audit_log(
+                    conn, clock, run_id=run_id, actor="planner", event="planner.no_action_retried",
+                    detail={"reasoning": proposal.reasoning},
+                )
+                conn.commit()
+                retry_note = (
+                    "Your previous response proposed no action. If you found that "
+                    "something else (another resource, a different lot, a corrective "
+                    "step) could resolve the detected condition, that is a reason to "
+                    "propose the plan which performs that resolution, not a reason to "
+                    "propose no action -- confirming a fix is possible is not the same "
+                    "as the problem being resolved. Only propose no action if the "
+                    "detected condition itself is not actually occurring. Reconsider "
+                    "and respond again."
+                )
+                continue
             set_run_status(conn, run_id, "closed")
             update_run_state(conn, run_id, {"reasoning": proposal.reasoning})
             return run_id

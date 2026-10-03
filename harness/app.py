@@ -268,6 +268,9 @@ class Harness:
         seed(self.conn, fixture)
         self.clock = Clock(self.conn)
 
+    def close(self) -> None:
+        self.conn.close()
+
     def status(self) -> dict[str, int | str]:
         counts: dict[str, int | str] = {
             table: self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

@@ -1,0 +1,24 @@
+[
+  {
+    "proposal": {
+      "kind": "workflow",
+      "workflow": "reroute_po",
+      "params": {
+        "part_id": "P-4471",
+        "original_po_id": "PO-77812",
+        "prod_order_id": "4812",
+        "qty": 120,
+        "needed_by": "2026-09-07"
+      },
+      "reasoning": "The original purchase order 'PO-77812' for part P-4471 has a promised delivery date that was confirmed as delayed (originally promised for 2026-09-04) based on the email from the supplier on 2026-09-01 indicating a revised ship date of 2026-09-07. Since the production order 4812 needs 120 units of this part by 2026-09-07, it is necessary to reroute the order to ensure timely fulfillment.",
+      "summary_for_user": "Proposing to reroute a portion of the purchase order 'PO-77812' for part 'P-4471' because the promised delivery is delayed, impacting production order '4812'."
+    }
+  },
+  {
+    "supplier_id": "S-Z",
+    "justification": "Meridian Drives has the shortest lead time of 2 days, making them the best choice for the urgent reroute."
+  },
+  {
+    "body": "Dear Production Team,\n\nPlease be advised that we have rerouted parts for Production Order 4812. The new supplier for the part ID P-4471 is now S-Z. \n\nEnsure that all necessary adjustments are made in the production schedule to accommodate this change. \n\nThank you for your attention to this matter.\n\nBest regards,\n\n[Your Name]"
+  }
+]

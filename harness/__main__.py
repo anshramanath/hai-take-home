@@ -1,4 +1,4 @@
-"""CLI entry point. `explain` and `demo` are added in later phases."""
+"""CLI entry point."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from rich.table import Table
 
 from harness.app import DEFAULT_DB_PATH, Harness
 from harness.audit.explain import explain as render_explain
+from harness.demo import run_demo
 from harness.planning.llm import OpenAIClient, ReplayClient
 from harness.world.receipts import record_receipt
 from harness.world.seed import FIXTURES
@@ -162,6 +163,20 @@ def explain(
     harness = Harness(db)
     for line in render_explain(harness.conn, run):
         console.print(line)
+
+
+@app.command()
+def demo(
+    interactive: bool = typer.Option(False, "--interactive", help="Pause at approvals for you to decide"),
+) -> None:
+    """Run Scenario A through approval, escalation, execution, and the
+    follow-up; then Scenario B; then the failure cases; then explain.
+    Uses the real API if OPENAI_API_KEY is set, otherwise replays a
+    recorded run.
+    """
+
+    llm_client = _llm_client_for_cli()
+    run_demo(console, llm_client, interactive=interactive)
 
 
 if __name__ == "__main__":

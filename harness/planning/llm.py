@@ -145,3 +145,21 @@ class ReplayClient:
             return response_model.model_validate(raw)
         except Exception as exc:
             raise LLMOutputInvalid(str(exc)) from exc
+
+
+class RecordingLLMClient:
+    """Wraps a real LLMClient (OpenAIClient) and records every parsed
+    response as a plain dict, in call order. Used once, by hand, to
+    produce the `runs/scenario_a_responses.json` replay fixture from an
+    actual run against the real API — not used by the harness itself at
+    runtime, and never touched by any test.
+    """
+
+    def __init__(self, inner: LLMClient):
+        self._inner = inner
+        self.recorded: list[dict] = []
+
+    def complete(self, messages: list[dict[str, str]], response_model: Type[T]) -> T:
+        result = self._inner.complete(messages, response_model)
+        self.recorded.append(json.loads(result.model_dump_json()))
+        return result

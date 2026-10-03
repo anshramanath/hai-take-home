@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from harness.planning.models import ToolCall
 from harness.policy.gate import Allowed, Blocked, gate
 from harness.world.users import get_user
@@ -131,7 +133,7 @@ def test_gate_makes_no_llm_calls():
 
     import harness.policy.gate as gate_module
 
-    tree = ast.parse(open(gate_module.__file__).read())
+    tree = ast.parse(Path(gate_module.__file__).read_text())
     imported_modules = [
         alias.name
         for node in ast.walk(tree)

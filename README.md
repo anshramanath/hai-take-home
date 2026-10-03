@@ -264,13 +264,25 @@ not because Scenario B's own logic required anything scenario-specific in the co
   meant to run while "today" is still that day. Advancing first would process tomorrow's
   date on the very first tick after seeding and would shift the escalation's "is the
   approver out tomorrow" check by a day from how it's built and tested.
-- **A gate rejection does not trigger a second planning attempt.** Re-planning after a
-  gate rejection is optional per the assignment's own framing, capped at one retry if
-  attempted; this build takes the other, equally allowed branch and reports the rejection
-  instead (the run ends `failed`, with the gate's reason in `runs.state` and visible
-  through `explain`). A future retry would re-run `propose()` once with the rejection
-  reason appended to the prompt, the same shape the planner's own invalid-output retry
-  already uses.
+- **A gate rejection triggers a second planning attempt only when the rejection itself is
+  one a fresh proposal could plausibly fix.** Re-planning after a gate rejection is
+  optional per the assignment's own framing, capped at one retry; most rejections (a
+  missing scope, a value over everyone's limit) aren't something re-planning changes, so
+  `Blocked` carries a `retryable` flag the gate sets only for the one case that is: a
+  free-form plan whose every step only informs someone (`notify_user`) and does not
+  itself resolve the attention item. Found against the real API on Scenario B's shortage
+  fixture, where a real model would sometimes compute the right answer (correctly
+  recognizing a shortfall, in one case) and then act on it with a notification instead of
+  `flag_shortage` -- reasoning right, action wrong. On that one retryable rejection,
+  `handle_attention_item` re-runs `propose()` once with the rejection reason appended as
+  an extra message, the same shape the planner's own invalid-output retry already uses.
+  The first wording tried also offered the model "or propose NoAction" as an out, which
+  measurably backfired: having already judged the item needed action by proposing a plan
+  for it, the model would sometimes use that offered exit to give up instead of finding
+  the right tool, more often than the original problem occurred. Removing that line and
+  insisting the retry include a real resolving step (never suggesting the model reconsider
+  whether to act at all) took a 12-run real-API batch from several unresolved cases to
+  zero. Every other rejection reason still reports and stops, exactly as before.
 - **`promised_date` is a fact `create_po` sets at execution, not a value frozen into the
   plan at approval.** The frozen plan carries what a human actually approved: supplier,
   quantity, price, and a `needed_by` deadline. Nobody approves a specific promised date

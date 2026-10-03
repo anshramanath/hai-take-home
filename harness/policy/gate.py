@@ -28,6 +28,11 @@ APPROVAL_LIMIT_KEY = "po_create_max"
 @dataclass(frozen=True)
 class Blocked:
     reason: str
+    # True only for a rejection a fresh proposal could plausibly fix (see
+    # the all-non-resolving-tools rule below) -- the caller's signal that
+    # one re-plan is worth trying before giving up and reporting to a
+    # human, per the locked decision allowing at most one such retry.
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,7 @@ def gate(
     workflow: str | None = None,
 ) -> GateResult:
     total_value = 0.0
+    tools: list[Tool] = []
 
     for step in steps:
         try:
@@ -116,6 +122,22 @@ def gate(
 
         if tool.value is not None:
             total_value += tool.value(validated_args)
+
+        tools.append(tool)
+
+    if workflow is None and tools and not any(t.resolves for t in tools):
+        # A declared workflow's own fixed steps always include a real
+        # resolving action by construction, so this only matters for
+        # free-form: a plan whose every step only informs someone
+        # (notify_user) never actually addresses the attention item.
+        # Retryable, since a fresh proposal naming an actual resolving
+        # tool is a plausible fix a re-plan could produce.
+        return Blocked(
+            "this plan consists entirely of non-resolving actions (e.g. notify_user) "
+            "and does not address the attention item itself; propose NoAction if "
+            "nothing should be done, or include the tool that actually resolves it",
+            retryable=True,
+        )
 
     if total_value > 0:
         approver = qualifying_approver(conn, requester, total_value)

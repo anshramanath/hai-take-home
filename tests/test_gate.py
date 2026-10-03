@@ -46,6 +46,41 @@ def test_workflow_only_tool_blocked_in_free_form_plan(make_harness):
     assert "workflow-only" in result.reason
 
 
+def test_free_form_plan_of_only_notify_user_is_blocked_and_retryable(make_harness):
+    """A real model, on the quality-hold shortage fixture, repeatedly
+    proposed only notify_user for an unresolved shortfall -- correct
+    reasoning, wrong action, nothing in the plan actually addresses the
+    attention item. Blocked, and retryable since a fresh proposal naming
+    an actual resolving tool is a plausible fix.
+    """
+    h = make_harness("scenario_b_shortage")
+    omar = get_user(h.conn, "u-202")
+    steps = [ToolCall(tool="notify_user", args={
+        "to_user": "u-301", "from_user": "u-202", "subject": "Lot on hold", "body": "FYI.",
+    })]
+    result = gate(h.conn, omar, steps, workflow=None)
+    assert isinstance(result, Blocked)
+    assert result.retryable is True
+    assert "non-resolving" in result.reason
+
+
+def test_free_form_plan_with_a_resolving_tool_alongside_notify_user_is_allowed(make_harness):
+    h = make_harness("scenario_b_covers")
+    omar = get_user(h.conn, "u-202")
+    steps = [
+        ToolCall(tool="reallocate_lot", args={
+            "prod_order_id": "4820", "part_id": "P-1180",
+            "remove": [{"lot_id": "L-2093", "qty": 100}],
+            "add": [{"lot_id": "L-2101", "qty": 70}, {"lot_id": "L-2115", "qty": 30}],
+        }),
+        ToolCall(tool="notify_user", args={
+            "to_user": "u-301", "from_user": "u-202", "subject": "Reallocated", "body": "Done.",
+        }),
+    ]
+    result = gate(h.conn, omar, steps, workflow=None)
+    assert isinstance(result, Allowed)
+
+
 def test_schedule_check_is_workflow_only(make_harness):
     """schedule_check's created_by_run must be the run's own id, never
     part of any context shown to a free-form plan; a real model, finding

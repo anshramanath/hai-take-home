@@ -377,10 +377,16 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="notify_user",
-        description="Send an internal notification to a user.",
+        description=(
+            "Send a one-way internal notification to a user. This informs someone; it "
+            "creates no tracked follow-up and does not by itself resolve anything still "
+            "open. Use it to report on an action already taken, or alongside another tool "
+            "that actually does the resolving -- never as a substitute for one."
+        ),
         input_schema=NotificationArgs,
         required_scopes=("production:notify",),
         writes=True,
+        resolves=False,
         precheck=_precheck_notify_user,
         run=_run_notify,
         compensate="send_correction",
@@ -392,6 +398,7 @@ _TOOLS: list[Tool] = [
         input_schema=NotificationArgs,
         required_scopes=("production:notify",),
         writes=True,
+        resolves=False,
         run=_run_notify,
     ),
     Tool(
@@ -429,7 +436,13 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="flag_shortage",
-        description="Flag a part shortage to purchasing.",
+        description=(
+            "Flag a part shortage to purchasing: creates an attention item owned by a "
+            "purchasing manager so someone with the authority and tools to source more "
+            "stock actually sees and acts on it. Use this whenever nothing available "
+            "covers the full requirement -- a notification alone leaves the shortfall "
+            "unresolved and nobody tracking it."
+        ),
         input_schema=FlagShortageArgs,
         required_scopes=("purchasing:flag",),
         writes=True,

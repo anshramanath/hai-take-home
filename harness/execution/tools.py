@@ -51,6 +51,10 @@ class Tool:
     writes: bool
     run: Callable[[Any, BaseModel, ToolContext], dict]
     allowed_in: tuple[str, ...] | None = None
+    # False for a tool that only ever informs someone (notify_user), never
+    # changes state that resolves an open problem by itself. The gate uses
+    # this to refuse a free-form plan that consists entirely of such tools.
+    resolves: bool = True
     value: Callable[[BaseModel], float] | None = None
     precheck: Callable[[Any, BaseModel], None] | None = None
     idempotency_key: Callable[[BaseModel, ToolContext], str] = default_idempotency_key

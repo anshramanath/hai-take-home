@@ -91,11 +91,14 @@ even when running the other.
 Every tool in `execution/catalog.py` declares the same shape (`execution/tools.py`'s
 `Tool` dataclass): `name`, `description`, `input_schema` (a Pydantic model, so malformed
 args fail before anything runs), `required_scopes`, `writes`, `allowed_in` (a tuple of
-workflow names if the tool is workflow-only, `None` if free-form may use it), `value` (a
-function from args to a dollar amount, for the threshold rule), `precheck` (a
-business-rule check re-run immediately before every write), `idempotency_key`, and
-`compensate` plus `compensation_args` (which tool undoes this one, and how to build its
-args from this call's own args and result).
+workflow names if the tool is workflow-only, `None` if free-form may use it), `resolves`
+(`False` only for `notify_user`/`send_correction`: a tool that informs someone but never
+by itself addresses an open problem; the gate refuses a free-form plan whose every step
+has `resolves=False`, added after a real model proposed exactly that on the shortage
+fixture), `value` (a function from args to a dollar amount, for the threshold rule),
+`precheck` (a business-rule check re-run immediately before every write),
+`idempotency_key`, and `compensate` plus `compensation_args` (which tool undoes this one,
+and how to build its args from this call's own args and result).
 
 | Tool | Scope | Workflow-only | Value | Compensation |
 |---|---|---|---|---|

@@ -739,6 +739,94 @@ treats as strictly required (`kind`, `steps`, `reasoning`, `workflow`, `params`)
 is treated as accepted residual model unreliability, not a gap to keep chasing: `CLAUDE.md`
 names exactly this policy, one retry, then fail and report.
 
+### Phase 11: a correctness gap in Scenario B, found by driving the shortage fixture hard
+
+Prompted by wanting Scenario B at "works 100%" confidence, not just "the mechanics are
+right." A thorough real-API sweep (both variants, 10+ runs each) surfaced two distinct
+free-form reasoning failures that no `FakeLLMClient` test could have caught, since fakes
+only return what they're scripted to return.
+
+**First: a partial reallocation with no shortage flag.** On the shortage fixture (90
+units free, 100 needed), a real model would sometimes propose `reallocate_lot` moving
+only the 90 available, with no `flag_shortage` alongside it -- 6 of 10 runs in one batch.
+Nothing in `reallocate_lot`'s precheck validated that the moved quantity matched what was
+removed; the order would end up silently under-allocated, 90/100, with nothing tracking
+the gap. Fixed two ways: `reallocate_lot`'s precheck now rejects `sum(add) != sum(remove)`
+outright (a reallocation either fully covers what it takes off the source lot(s) or it
+shouldn't run at all), and `QualityProvider` now computes a `coverage_check` fact
+(`required_qty`, `total_free_qty_available`, `shortfall`) instead of leaving the model to
+add up several lots' free quantities itself -- the same pattern section 8's own
+`required_qty` already uses for the stockout detector. Re-verified: 8 then 12 further
+real-API runs, zero silent under-coverage.
+
+**Second, found while investigating the first: a model that reasons correctly and still
+acts wrong.** Inspecting a run where the model chose only `notify_user` on the shortage
+fixture, its own `reasoning` field correctly computed the 10-unit shortfall using the new
+`coverage_check` fact -- the arithmetic was never the problem. It then proposed a
+notification describing the shortfall instead of calling `flag_shortage`, the tool whose
+entire purpose is routing an unresolved shortfall to someone who can act on it. Across a
+12-run batch, 6 of 10 shortage runs where no lot combination covered the need chose
+`notify_user` alone, correctly-reasoned-shortfall and all, with no further resolving step.
+`flag_shortage`'s description was the likely cause: `"Flag a part shortage to
+purchasing."`, with nothing distinguishing it from `notify_user`'s equally thin
+`"Send an internal notification to a user."`. Rewrote both (`execution/catalog.py`) to
+state the real, generic difference -- one tracked and owned, one not -- without naming any
+scenario. Measured: 4/10 correct fix actions became 10/12.
+
+Considered, and explicitly rejected after checking: touching the dedupe mechanism so an
+unresolved item could re-surface automatically. `attention_items.dedupe_key` is a bare
+`UNIQUE` constraint with no regard for whether the original item was ever actually
+resolved -- confirmed directly (a deliberately inadequate `notify_user`-only plan,
+approved, "completes," and a second `tick()` on the still-unresolved condition logs
+`detection.duplicate_ignored` forever after). Real, but a different kind of gap than the
+first two: the dedupe design is intentional (it exists so a problem still being worked on
+isn't re-alerted every tick), and building re-entry machinery for "a free-form resolution
+that didn't actually resolve anything" is new scope, not a bug fix, so it was left alone.
+The two tool-catalog fixes above target the actual cause instead: stop the inadequate
+resolution from completing in the first place.
+
+**Still 2/12 choosing `notify_user` alone after the description fix.** Rather than accept
+that residual, `Tool` gained a `resolves: bool` field (`False` for `notify_user` and
+`send_correction`, the two tools that only ever inform, never themselves address an open
+problem), and `gate()` gained one rule: a free-form plan whose every step has
+`resolves=False` is `Blocked`, with a new `retryable: bool` field on `Blocked` set `True`
+for this one reason. `handle_attention_item` (`app.py`) now loops at most twice -- the
+original proposal, and, only on a retryable rejection, one re-plan with the rejection
+reason appended as an extra message (`propose()` gained an optional `retry_note`
+parameter for this, a different failure class from its existing invalid-output retry).
+Every other rejection reason (missing scope, value over everyone's limit, unknown tool)
+still reports and stops exactly as before -- re-planning only fires for the one rejection
+a fresh proposal could plausibly fix. This is the "optional, max 1 retry, logged"
+re-planning-after-gate-rejection the locked decisions table always allowed; the original
+build had taken the other allowed branch (report and stop), and this phase is the first
+place a real, measured failure mode justified building the other one.
+
+The first retry wording tried offered the model "or propose NoAction if nothing should be
+done" as an out. Measured against the real API: this made things worse, not better --
+having already judged the item needed action by proposing a plan for it, the model would
+sometimes use the offered exit to give up (`NoAction`) rather than find the right tool,
+more often than the original notify-only problem occurred (5 of 12 runs ended with no fix
+at all, most of them *after* a correctly-triggered retry). Same shape as the Phase 10
+system-prompt regression: a plausible-sounding addition, measured, and reverted. Removing
+the `NoAction` suggestion and instead stating plainly that the model had already judged
+action was needed, so the retry must include a real resolving step, took a 12-run batch
+from 5 unresolved to zero. `test_a_retryable_gate_rejection_is_reproposed_once_and_can_succeed`
+and `test_a_retryable_gate_rejection_fails_after_exactly_one_retry_if_still_inadequate`
+(`test_app.py`) cover the mechanism with `FakeLLMClient`; the numbers above are from the
+real API, which is the only thing that could have caught either finding.
+
+**One more gap, found as a side effect of touching this code:** `handle_attention_item`'s
+free-form path never logged `gate.allowed` or `gate.blocked` to the audit log at all --
+only the declared-workflow path's execution-time re-check did (`engine.py`). Section 13
+names both as required event types, and no existing test caught it because the gate
+function itself is correctly tested in isolation (`test_gate.py`) and nothing end-to-end
+asserted the *caller* audited its result. Fixed in the same change, since the retry
+feature needed this logging anyway to be auditable; `test_gate_allowed_is_audited_for_a_
+straightforward_free_form_plan` closes the gap.
+
+All five target packages remain at 100% line coverage; 264 tests pass (5 more than before
+this phase).
+
 ---
 
 ## Deviations from `CLAUDE.md`, collected
@@ -817,13 +905,17 @@ silently:
     has left to give). Kept distinct from `halted_no_supplier`, which is reserved for "no
     candidate survived the supplier/lead-time checks," a different root cause than "the
     params describing the problem don't match the ERP at all."
-17. **Re-planning after a gate rejection is not implemented** (section 3 lists it as
-    optional: "max 1 retry, logged. If skipped, report the rejection to the user"). A
-    gate-blocked proposal sets the run's status to `failed` with the reason stashed in
-    `runs.state`, visible through `explain`; no automatic second attempt is made. This is
-    the "skipped" branch the locked decision itself allows for, not an oversight, but it
-    had gone undocumented anywhere in the four deliverables until this review's pass
-    through the assignment's own requirements caught the gap.
+17. **Re-planning after a gate rejection is implemented for exactly one rejection reason,
+    not generally** (section 3 lists it as optional: "max 1 retry, logged"). Originally
+    the build took the "skipped" branch the same locked decision allows (report and
+    stop) for every rejection. Phase 11 implemented the other branch, narrowly: `Blocked`
+    gained a `retryable` field, `True` only when the gate's new all-non-resolving-tools
+    rule fires (see the deviation below); every other rejection (missing scope, value over
+    everyone's limit, unknown tool, invalid args) still reports and stops exactly as
+    before, since re-planning can't fix a fact about the world, only a reasoning mistake
+    about which tool to use. `handle_attention_item` loops at most twice, logs `gate.
+    blocked` either way, and only re-calls `propose()` with a corrective message on a
+    retryable rejection.
 18. **No tool gets a bespoke audit event name; every write funnels through the generic
     `action.executed`** (phase 2, noticed as a gap against section 13's literal event list
     in this review). Section 13 names `schedule.created` alongside `schedule.fired` as
@@ -876,3 +968,41 @@ silently:
     than quietly discarding it, since this is exactly the kind of change that fails in the
     direction that looks safest (fewer writes) and nothing in the test suite would ever
     catch it, only measuring real-API behavior before and after did.
+25. **`reallocate_lot`'s precheck gained a quantity-conservation check** (phase 11):
+    `sum(add) != sum(remove)` is refused outright. Not in section 12's tool table. A real
+    model, on the shortage fixture, repeatedly proposed moving less than the held
+    allocation's full amount with no `flag_shortage` alongside it, leaving the order
+    silently under-covered; nothing previously validated the two sums against each other.
+26. **`QualityProvider` gained a `coverage_check` fact** (`required_qty`,
+    `total_free_qty_available`, `shortfall`) (phase 11), not in section 9's contract.
+    Mirrors `required_qty` already being handed to the stockout detector rather than left
+    for the model to derive; a real model's own reasoning showed it could compute the
+    shortfall correctly once the data was given directly, but not reliably when it had to
+    sum several released lots' free quantities itself.
+27. **`notify_user` and `flag_shortage`'s descriptions were rewritten** (phase 11) to state
+    the generic distinction between "informs, creates no tracked follow-up" and "creates
+    an owned item someone must act on." Both were one terse sentence before. A real model,
+    with correct reasoning about a shortfall, chose `notify_user` to describe the problem
+    in prose rather than `flag_shortage` to actually route it; measured across a 12-run
+    real-API batch, the rewrite took runs with an actual fix action from 4/10 to 10/12.
+28. **`Tool` gained a `resolves: bool` field** (`False` only for `notify_user` and
+    `send_correction`) and `gate()` gained a rule blocking any free-form plan whose every
+    step has `resolves=False` (phase 11), neither in section 7 or 11's contract. The
+    description rewrite above (27) measurably helped but left a residual (2/12 runs still
+    proposing `notify_user` alone); this closes it structurally rather than continuing to
+    tune wording. This is also the rule that makes deviation 17's `retryable` flag ever
+    fire.
+29. **The retry message for this one retryable rejection does not offer `NoAction` as an
+    alternative**, despite the first version tried doing exactly that (phase 11). Measured
+    against the real API: offering it made the failure *more* common, not less -- the
+    model would use the offered exit to give up rather than find the right tool, since it
+    had already judged (by proposing a plan at all) that the item needed action. Same
+    shape as deviation 24: a plausible-sounding addition, measured, found to backfire,
+    reverted. The retry message instead states plainly that action was already judged
+    necessary and must include a real resolving step.
+30. **`handle_attention_item`'s free-form path now logs `gate.allowed` / `gate.blocked`**
+    (phase 11); it never had, only the declared-workflow path's execution-time re-check
+    did. Section 13 names both as required event types. Found as a side effect of adding
+    the retry mechanism above, which needed this logging to be auditable; no existing test
+    had caught the gap, since `gate()` itself is correctly unit-tested in isolation and
+    nothing end-to-end had asserted the caller recorded its result.

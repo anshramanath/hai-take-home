@@ -23,6 +23,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+from harness.audit.log import log as audit_log
 from harness.context.registry import gather_context
 from harness.detection.base import AttentionItem
 from harness.detection.registry import run_detectors
@@ -118,42 +119,70 @@ def handle_attention_item(
         "context_record_ids": {source: slice_.record_ids for source, slice_ in context.items()},
     })
 
-    try:
-        proposal = propose(conn, clock, llm_client, item, context, memory_facts, user, run_id=run_id)
-    except PlannerFailed as exc:
-        set_run_status(conn, run_id, "failed")
-        update_run_state(conn, run_id, {"error": str(exc)})
-        return run_id
+    retry_note = None
+    for attempt in range(2):  # the original proposal, plus at most one re-plan (section 3's locked decision)
+        try:
+            proposal = propose(
+                conn, clock, llm_client, item, context, memory_facts, user,
+                run_id=run_id, retry_note=retry_note,
+            )
+        except PlannerFailed as exc:
+            set_run_status(conn, run_id, "failed")
+            update_run_state(conn, run_id, {"error": str(exc)})
+            return run_id
 
-    if isinstance(proposal, NoAction):
-        set_run_status(conn, run_id, "closed")
-        update_run_state(conn, run_id, {"reasoning": proposal.reasoning})
-        return run_id
+        if isinstance(proposal, NoAction):
+            set_run_status(conn, run_id, "closed")
+            update_run_state(conn, run_id, {"reasoning": proposal.reasoning})
+            return run_id
 
-    if isinstance(proposal, WorkflowRequest):
-        definition = get_definition(proposal.workflow, latest_version(proposal.workflow))
-        instance_row = enter_workflow(
-            conn, clock, llm_client, definition, proposal.params, run_id=run_id, requester=user,
+        if isinstance(proposal, WorkflowRequest):
+            definition = get_definition(proposal.workflow, latest_version(proposal.workflow))
+            instance_row = enter_workflow(
+                conn, clock, llm_client, definition, proposal.params, run_id=run_id, requester=user,
+            )
+            update_run_state(conn, run_id, {"instance_id": instance_row["instance_id"]})
+            set_run_status(conn, run_id, instance_row["status"])
+            return run_id
+
+        assert isinstance(proposal, ToolPlan)
+        result = gate(conn, user, proposal.steps, workflow=None)
+
+        if isinstance(result, Allowed):
+            audit_log(
+                conn, clock, run_id=run_id, actor="gate", event="gate.allowed",
+                detail={"approver_id": result.approver_id, "routed_reason": result.routed_reason},
+            )
+            conn.commit()
+            approval_id = create_approval(
+                conn, clock, run_id=run_id, requester=user, steps=proposal.steps,
+                approver_id=result.approver_id, routed_reason=result.routed_reason, workflow=None,
+            )
+            update_run_state(conn, run_id, {"approval_id": approval_id})
+            set_run_status(conn, run_id, "awaiting_approval")
+            return run_id
+
+        assert isinstance(result, Blocked)
+        will_retry = attempt == 0 and result.retryable
+        audit_log(
+            conn, clock, run_id=run_id, actor="gate", event="gate.blocked",
+            detail={"reason": result.reason, "retrying": will_retry},
         )
-        update_run_state(conn, run_id, {"instance_id": instance_row["instance_id"]})
-        set_run_status(conn, run_id, instance_row["status"])
-        return run_id
+        conn.commit()
+        if not will_retry:
+            set_run_status(conn, run_id, "failed")
+            update_run_state(conn, run_id, {"gate_blocked_reason": result.reason})
+            return run_id
 
-    assert isinstance(proposal, ToolPlan)
-    result = gate(conn, user, proposal.steps, workflow=None)
-    if isinstance(result, Blocked):
-        set_run_status(conn, run_id, "failed")
-        update_run_state(conn, run_id, {"gate_blocked_reason": result.reason})
-        return run_id
+        retry_note = (
+            f"Your previous plan was rejected: {result.reason} You already judged that "
+            "this attention item needs action, by proposing a plan for it; a plan whose "
+            "only step informs someone does not count as that action. Respond again "
+            "with a plan that includes at least one step which actually changes system "
+            "state to address the item, before any notification."
+        )
 
-    assert isinstance(result, Allowed)
-    approval_id = create_approval(
-        conn, clock, run_id=run_id, requester=user, steps=proposal.steps,
-        approver_id=result.approver_id, routed_reason=result.routed_reason, workflow=None,
-    )
-    update_run_state(conn, run_id, {"approval_id": approval_id})
-    set_run_status(conn, run_id, "awaiting_approval")
-    return run_id
+    raise AssertionError("unreachable: the retry loop always returns")
 
 
 def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:

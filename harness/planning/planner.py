@@ -1,7 +1,10 @@
 """The free-form planner (section 10): attention item + context + memory
 hints -> one proposal. One retry on invalid output, then the run fails and
-reports why. Contains no scenario-specific wording; everything it shows
-the model comes from the live registries and the gathered context.
+reports why. A second, separate kind of one-time retry (`retry_note`) is
+available to the caller for a retryable gate rejection -- a different
+failure class, handled in app.py, not here. Contains no scenario-specific
+wording; everything it shows the model comes from the live registries and
+the gathered context.
 """
 
 from __future__ import annotations
@@ -117,8 +120,19 @@ def propose(
     user: User,
     *,
     run_id: str | None = None,
+    retry_note: str | None = None,
 ) -> Proposal:
+    """`retry_note`, when given, is appended as an extra user message
+    before calling the model -- used for the one allowed re-plan after a
+    retryable gate rejection (section 11), a different failure class from
+    the invalid-output retry below: that one responds to a schema
+    validation error, this one to a policy decision about an otherwise
+    valid proposal.
+    """
+
     messages = build_messages(item, context, memory_facts, user)
+    if retry_note:
+        messages = messages + [{"role": "user", "content": retry_note}]
     output_model = _planner_output_model(item.detector)
 
     try:

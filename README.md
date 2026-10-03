@@ -42,27 +42,45 @@ require you to manufacture it.
 
 ### Every CLI command
 
-```
-uv run python -m harness reset --fixture scenario_a        # wipe and reseed harness.db
-uv run python -m harness status                             # row counts + today's date
-uv run python -m harness tick                                # advance one simulated day
-uv run python -m harness approve AP-XXXX --as u-101          # approve and execute
-uv run python -m harness reject AP-XXXX --as u-101           # reject, nothing runs
-uv run python -m harness receive PO-XXXX 120                 # record a receipt
-uv run python -m harness explain                              # print the audit narrative
-uv run python -m harness demo                                 # the full walkthrough
-```
+| Command | What it does |
+|---|---|
+| `uv run python -m harness reset --fixture scenario_a` | wipe and reseed `harness.db` |
+| `uv run python -m harness status` | row counts + today's date |
+| `uv run python -m harness tick` | advance one simulated day |
+| `uv run python -m harness approve AP-XXXX --as u-101` | approve and execute |
+| `uv run python -m harness reject AP-XXXX --as u-101` | reject, nothing runs |
+| `uv run python -m harness receive PO-XXXX 120` | record a receipt |
+| `uv run python -m harness explain` | print the audit narrative |
+| `uv run python -m harness demo` | the full walkthrough |
 
 All of them accept `--db <path>` (default `harness.db`); `reset --fixture` accepts any
 name in `harness/world/seed.py` (`scenario_a`, five `scenario_a_*` variants,
-`scenario_b_covers`, `scenario_b_shortage`).
+`scenario_b_covers`, `scenario_b_shortage`). Each command is a single line with no
+trailing comment, safe to copy and paste directly into an interactive shell -- including
+`zsh` (the macOS default), which, unlike `bash`, does not treat `#` as a comment starter
+in interactive mode by default, so a pasted trailing `# comment` becomes literal
+arguments instead of being ignored.
 
 ### Tests and coverage
+
+`pytest` and `pytest-cov` are declared as an optional `dev` extra (`pyproject.toml`), not
+a base dependency, since the demo itself never needs them. Install that extra once first:
+
+```
+uv sync --extra dev
+```
+
+Then:
 
 ```
 uv run pytest
 uv run pytest --cov=harness --cov-report=term-missing
 ```
+
+Plain `uv sync` (the "How to run" command above) does not include `dev`, and will
+actively remove it from an already-synced environment that had it -- if `uv run pytest`
+ever reports a `pytest` version other than what `uv sync --extra dev` just installed, or
+`--cov` comes back as an unrecognized argument, that's why: re-run `uv sync --extra dev`.
 
 No network calls anywhere in the suite (`FakeLLMClient` and `ReplayClient` only).
 `policy/`, `execution/`, `detection/`, `scheduling/`, and `audit/` (the five packages the

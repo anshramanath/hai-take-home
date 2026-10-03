@@ -284,6 +284,78 @@ at the end of this file.
 
 ---
 
+## Phase 5: scheduler, follow-up, memory, explain
+
+### What was built
+
+- `harness/scheduling/tasks.py`: a generic deferred-task runner. `run_due_tasks()` finds
+  every `scheduled_tasks` row with `status='pending'` and `run_at <= today`, marks it
+  `fired` immediately (before dispatch), then calls a handler registered by `kind`. Marking
+  before dispatch is what makes a task fire exactly once even if `run_due_tasks` runs twice
+  on the same day.
+- `harness/scheduling/arrival_check.py`: the one handler registered so far, for
+  `kind="arrival_check"`. Sums `erp_receipts` for the PO; if it covers the ordered qty,
+  audits `arrival_check.confirmed` and writes a confirmed-outcome memory fact about the
+  replacement supplier. If not, audits `arrival_check.missed` and raises a brand new
+  attention item — same `stockout:{part_id}:{prod_order_id}:{po_id}` dedupe-key shape a
+  detector would use, just keyed on the new PO — so the next tick's planning pass picks it
+  up exactly like a fresh detection.
+- `harness/memory/facts.py`: `write_fact()` (subject, fact text, source record ids,
+  optional expiry) and `facts_for_prompt()` (every non-expired fact, handed to the planner
+  as hints).
+- `harness/world/receipts.py`: `record_receipt()` — a plain data write with no scope, no
+  gate, no tool wrapper, because receiving a shipment is an external-world event (the
+  warehouse scanning something in), not an agent action.
+- `harness/audit/explain.py`: renders the audit log into the human-readable narrative
+  section 13 asks for, one event type to one line each, with an unknown-event fallback so
+  a future event type never breaks `explain` — it just renders as its raw JSON detail
+  until someone adds a proper line for it.
+- `app.py`'s `tick()` now runs due tasks first (within the "today" phase, before the clock
+  advances — see phase 4's deviation #6) and plans for every `open` attention item, not
+  just the ones `run_detectors` returned that tick, so an item the arrival-check handler
+  just raised gets planned in the same tick it appeared. `handle_attention_item` now
+  passes real `facts_for_prompt()` output to the planner and stashes the item's facts and
+  gathered mail record ids into run state, for `approve()` to turn into a confirmed-outcome
+  memory fact once (and only once) the workflow actually reaches `completed`. New CLI
+  commands: `receive`, `explain`.
+
+### Reasoning
+
+- **A real off-by-one in the stockout detector's inbound-PO window, found by trying to
+  actually run the Tuesday follow-up, not reasoned out in advance.** The window was
+  `today < promised_date <= scheduled_start`. Driving the clock forward to exercise the
+  arrival check (which lands exactly on the replacement PO's promised date, since
+  detectors re-run after any ERP-writing tool call per phase 4) meant that by the time
+  `today` reached that date, the window's strict `<` excluded the PO — not yet "received"
+  by an actual receipt, but also no longer "upcoming" by the window's own definition. The
+  detector read this as a fresh shortfall and tried to re-plan a second reroute mid-test,
+  which is wrong: on the day a PO is promised, the ERP still reads it as on time, and the
+  detector is explicitly supposed to trust ERP dates at face value (that's the whole
+  premise of section 8 — "the ERP does not know about the slip; the email does"). Changed
+  to `today <= promised_date <= scheduled_start`. A genuine fresh risk (the date passes
+  with still no receipt) still fires correctly, just starting the day after, which is the
+  semantically correct day for it to start mattering.
+- **Attention items gain a `status` lifecycle (`open` -> `planned`), not just created once
+  and left alone.** Needed once two different things could raise an item in the same tick
+  (a detector, and now the arrival-check handler): without marking an item `planned`
+  immediately, `tick()` would have had to track "which items did `run_detectors` just
+  return" separately from "which items exist," and would have missed the arrival-check's
+  item entirely (it isn't in `run_detectors`'s return value). Marking status before
+  planning runs, not after, also means an item is handed to the planner at most once
+  regardless of what the planner does with it — including a planner failure — mirroring
+  the same "exactly once" property `run_due_tasks` gives scheduled tasks.
+- **Memory facts are written in exactly two places, both confirmed outcomes, never at
+  proposal time**: when `approve()` sees a workflow reach `completed` (not when it merely
+  enters `awaiting_approval` — a proposal is not yet a confirmed outcome), and when the
+  arrival check confirms a receipt. Rejected, failed, and halted runs never write a fact,
+  on the same reasoning. The completion-time fact needs context (the mail evidence, the
+  original supplier) that the approval record alone doesn't carry, which is why
+  `handle_attention_item` now stashes it into `runs.state` at planning time for `approve()`
+  to read back later — run memory and persistent memory meeting at exactly the point
+  section 13 says they should.
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're
@@ -315,3 +387,12 @@ silently:
 9. **`ToolPlan.kind`, `WorkflowRequest.kind`, `NoAction.kind` are required fields with no
    default** (changed from phase 2's `= "plan"` etc.) (phase 4) — an optional discriminator
    field let a real model substitute the class name for the literal value.
+10. **The stockout detector's inbound-PO window is `today <= promised_date <=
+    scheduled_start`** (changed from a strict `today <`) (phase 5) — on the day a PO is
+    promised the ERP still reads it as on time; excluding it at exactly that boundary
+    caused a spurious fresh shortfall the moment the clock reached it with no receipt yet
+    recorded.
+11. **`attention_items` gained a status transition (`open` -> `planned`)**, not specified
+    in the schema's original field list (phase 5) — needed once both a detector and the
+    arrival-check handler could raise an item in the same tick; `tick()` plans every `open`
+    item rather than only the ones its own `run_detectors` call returned.

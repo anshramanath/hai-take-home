@@ -26,16 +26,21 @@ def run_detectors(conn: sqlite3.Connection, clock: Clock) -> list[str]:
 
     for detector in DETECTORS:
         for item in detector.detect(ctx):
-            created_id = _insert_or_log_duplicate(conn, clock, detector.name, item)
+            created_id = raise_attention_item(conn, clock, detector.name, item)
             if created_id is not None:
                 created.append(created_id)
 
     return created
 
 
-def _insert_or_log_duplicate(
-    conn: sqlite3.Connection, clock: Clock, detector_name: str, item: AttentionItem
+def raise_attention_item(
+    conn: sqlite3.Connection, clock: Clock, actor: str, item: AttentionItem
 ) -> str | None:
+    """Insert `item`, or log it as already known on a dedupe_key collision.
+    Public so anything that raises an attention item outside a detector's
+    own scan — the arrival-check task re-entering the loop, for instance —
+    goes through the same dedupe path a detector would.
+    """
     item_id = f"AI-{uuid.uuid4().hex[:8].upper()}"
     try:
         conn.execute(
@@ -49,14 +54,14 @@ def _insert_or_log_duplicate(
     except sqlite3.IntegrityError:
         conn.rollback()
         audit_log(
-            conn, clock, run_id=None, actor=detector_name, event="detection.duplicate_ignored",
+            conn, clock, run_id=None, actor=actor, event="detection.duplicate_ignored",
             detail={"dedupe_key": item.dedupe_key},
         )
         conn.commit()
         return None
 
     audit_log(
-        conn, clock, run_id=None, actor=detector_name, event="detection.raised",
+        conn, clock, run_id=None, actor=actor, event="detection.raised",
         detail={"item_id": item_id, "dedupe_key": item.dedupe_key, "owner_id": item.owner_id, "summary": item.summary},
     )
     conn.commit()

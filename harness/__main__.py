@@ -10,7 +10,9 @@ from rich.console import Console
 from rich.table import Table
 
 from harness.app import DEFAULT_DB_PATH, Harness
+from harness.audit.explain import explain as render_explain
 from harness.planning.llm import OpenAIClient, ReplayClient
+from harness.world.receipts import record_receipt
 from harness.world.seed import FIXTURES
 
 app = typer.Typer(help="Harmony agent harness CLI")
@@ -82,6 +84,8 @@ def tick(db: Path = DbOption) -> None:
     llm_client = _llm_client_for_cli()
     result = harness.tick(llm_client)
     console.print(f"[bold]Tick for {result['today']}[/bold]")
+    if result["fired_tasks"]:
+        console.print(f"  Fired scheduled tasks: {result['fired_tasks']}")
     if result["escalated"]:
         console.print(f"  Escalated approvals: {result['escalated']}")
     if result["resumed_workflows"]:
@@ -125,6 +129,39 @@ def reject(
     harness = Harness(db)
     harness.reject(approval_id, decided_by)
     console.print(f"[yellow]Rejected[/yellow] {approval_id} as {decided_by}.")
+
+
+@app.command()
+def receive(
+    po_id: str,
+    qty: int,
+    db: Path = DbOption,
+) -> None:
+    """Record a receipt against a PO (an external-world event: the
+    warehouse scanning in a shipment, not an agent action).
+    """
+
+    if not db.exists():
+        console.print(f"[red]No database at {db}. Run 'reset' first.[/red]")
+        raise typer.Exit(code=1)
+    harness = Harness(db)
+    receipt_id = record_receipt(harness.conn, harness.clock, po_id=po_id, qty=qty)
+    console.print(f"[green]Recorded[/green] receipt {receipt_id}: {qty} units against {po_id}.")
+
+
+@app.command()
+def explain(
+    run: str = typer.Option(None, "--run", help="Only show this run_id's events"),
+    db: Path = DbOption,
+) -> None:
+    """Print the audit log as a human-readable narrative, in order."""
+
+    if not db.exists():
+        console.print(f"[red]No database at {db}. Run 'reset' first.[/red]")
+        raise typer.Exit(code=1)
+    harness = Harness(db)
+    for line in render_explain(harness.conn, run):
+        console.print(line)
 
 
 if __name__ == "__main__":

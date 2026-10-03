@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from harness.execution import workflows as _workflows  # noqa: F401  (registers every workflow definition)
+from harness.scheduling import arrival_check as _arrival_check  # noqa: F401  (registers the arrival_check task handler)
 from harness.scheduling.clock import Clock
 from harness.world.seed import seed
 

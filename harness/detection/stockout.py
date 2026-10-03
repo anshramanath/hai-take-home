@@ -13,6 +13,17 @@ For 4812/P-4471 this fires on the thin-margin path: PO-77812 (promised
 days out. The detector doesn't know the shipment has actually slipped (the
 ERP still shows it on time) — that confirmation is the email, which the
 planner reads via the mail provider.
+
+The inbound window is `today <= promised_date <= scheduled_start`
+(inclusive of today): on the day a PO is promised, the ERP still reads it
+as on time, so the detector credits it. Found empirically — an earlier
+strict `today <` excluded a PO on the exact day it was due, which meant
+once the clock reached that date with no receipt recorded yet, a fresh
+stockout fired for supply that was, as far as the ERP was concerned, still
+on schedule. This matters across a tick boundary: Scenario A's follow-up
+check lands on the same day the replacement PO is promised, and the
+detector re-runs (since create_po/reduce_po touch an ERP table) in that
+same tick.
 """
 
 from __future__ import annotations
@@ -73,7 +84,7 @@ class StockoutDetector:
                 "WHERE part_id = ? AND status = 'open'",
                 (part_id,),
             ).fetchall()
-            if today < date.fromisoformat(promised_s) <= scheduled_start
+            if today <= date.fromisoformat(promised_s) <= scheduled_start
         ]
 
         other_demand = 0

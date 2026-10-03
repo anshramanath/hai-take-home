@@ -11,6 +11,7 @@ from harness.app import approve, reject, tick
 from harness.execution.workflows.reroute_po import ChooseSupplierResponse, DraftNotificationResponse
 from harness.planning.llm import FakeLLMClient
 from harness.planning.models import PlannerOutput, WorkflowRequest
+from harness.world.receipts import record_receipt
 
 
 def _reroute_llm() -> FakeLLMClient:
@@ -82,6 +83,36 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
 
     run_row = h.conn.execute("SELECT status FROM runs").fetchone()
     assert run_row["status"] == "completed"
+
+
+def test_scenario_a_full_story_through_the_arrival_check(make_harness):
+    """15.12: 9/2 detection through escalation, approval, execution, and
+    the follow-up firing at Z's ETA (2026-09-04) with a confirmed receipt.
+    """
+
+    h = make_harness("scenario_a")
+    llm = _reroute_llm()
+
+    tick(h.conn, h.clock, llm)  # 9/2 -> 9/3: detect, plan, request approval
+    tick(h.conn, h.clock, llm)  # 9/3 -> 9/4: Dana OOO, escalates to Priya
+    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-102")
+
+    new_po = h.conn.execute("SELECT po_id, qty FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()
+    task = h.conn.execute("SELECT run_at, status FROM scheduled_tasks").fetchone()
+    assert task["run_at"] == "2026-09-04"
+    assert task["status"] == "pending"  # today is 2026-09-04 but tick() hasn't run again yet
+
+    record_receipt(h.conn, h.clock, po_id=new_po["po_id"], qty=new_po["qty"])
+    result = tick(h.conn, h.clock, llm)  # 9/4 -> 9/5: the follow-up fires
+
+    task_id = h.conn.execute("SELECT task_id FROM scheduled_tasks").fetchone()["task_id"]
+    assert task_id in result["fired_tasks"]
+    assert h.conn.execute(
+        "SELECT event FROM audit_log WHERE event = 'arrival_check.confirmed'"
+    ).fetchone() is not None
+    fact = h.conn.execute("SELECT subject FROM memory_facts WHERE subject = 'S-Z'").fetchone()
+    assert fact is not None
 
 
 def test_scenario_a_decided_by_the_backup_is_attributed_to_the_backup(make_harness):

@@ -35,13 +35,16 @@ from harness.execution.engine import (
     resume_all,
     set_instance_status,
 )
-from harness.memory.runs import create_run, set_run_status, update_run_state
+from harness.memory.facts import facts_for_prompt, write_fact
+from harness.memory.runs import create_run, get_run, set_run_status, update_run_state
 from harness.planning.llm import LLMClient, OpenAIClient, ReplayClient
 from harness.planning.models import NoAction, ToolPlan, WorkflowRequest
 from harness.planning.planner import PlannerFailed, propose
 from harness.policy.approvals import create_approval, decide, escalate_pending, get_approval
 from harness.policy.gate import Allowed, Blocked, gate
+from harness.scheduling import arrival_check as _arrival_check  # noqa: F401  (registers the arrival_check task handler)
 from harness.scheduling.clock import Clock
+from harness.scheduling.tasks import run_due_tasks
 from harness.world.seed import seed
 from harness.world.users import get_user
 
@@ -95,11 +98,24 @@ def handle_attention_item(
         detector=item_row["detector"], dedupe_key=item_row["dedupe_key"],
         owner_id=item_row["owner_id"], summary=item_row["summary"], facts=json.loads(item_row["facts"]),
     )
+    # Marked immediately, before planning: an item is handed to the
+    # planner at most once, regardless of what the planner does with it.
+    conn.execute("UPDATE attention_items SET status = 'planned' WHERE item_id = ?", (item_row["item_id"],))
+    conn.commit()
+
     user = get_user(conn, item.owner_id)
     run_id = create_run(conn, clock, item_id=item_row["item_id"], user_id=user.user_id)
 
     context = gather_context(conn, clock, user, item, run_id=run_id)
-    memory_facts: list[dict] = []  # phase 5 populates this from confirmed outcomes
+    memory_facts = facts_for_prompt(conn, clock)
+    # Kept for the confirmed-outcome memory fact written on approval
+    # (section 13): the mail evidence behind this run's reasoning, and the
+    # item's own facts (supplier, dependent PO), are not otherwise
+    # reachable from the approval record alone.
+    update_run_state(conn, run_id, {
+        "item_facts": item.facts,
+        "context_record_ids": {source: slice_.record_ids for source, slice_ in context.items()},
+    })
 
     try:
         proposal = propose(conn, clock, llm_client, item, context, memory_facts, user, run_id=run_id)
@@ -141,30 +157,56 @@ def handle_attention_item(
 
 def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:
     """Everything scoped to "today" runs before the clock advances: due
-    scheduled tasks (added in phase 5), approval escalation, resuming any
-    workflow a crash left running, detection, and planning for whatever
-    detection just raised. The clock advances last, preparing for the next
-    tick.
+    scheduled tasks, approval escalation, resuming any workflow a crash
+    left running, detection, and planning for anything still unplanned.
+    The clock advances last, preparing for the next tick.
+
+    Planning runs over every `open` attention item, not just the ones
+    `run_detectors` returned this tick: an arrival-check task firing in
+    the same tick (above) can raise a new item of its own, and it needs
+    planning exactly the same way a freshly detected one does.
     """
 
+    fired_tasks = run_due_tasks(conn, clock)
     escalated = escalate_pending(conn, clock)
     resumed = resume_all(conn, clock, llm_client)
     new_item_ids = run_detectors(conn, clock)
 
-    run_ids = []
-    for item_id in new_item_ids:
-        item_row = conn.execute("SELECT * FROM attention_items WHERE item_id = ?", (item_id,)).fetchone()
-        run_ids.append(handle_attention_item(conn, clock, llm_client, item_row))
+    unplanned = conn.execute("SELECT * FROM attention_items WHERE status = 'open'").fetchall()
+    run_ids = [handle_attention_item(conn, clock, llm_client, row) for row in unplanned]
 
     today_before = clock.today().isoformat()
     clock.advance(1)
     return {
         "today": today_before,
+        "fired_tasks": fired_tasks,
         "escalated": escalated,
         "resumed_workflows": resumed,
         "new_items": new_item_ids,
         "runs": run_ids,
     }
+
+
+def _write_completion_fact(conn: sqlite3.Connection, clock: Clock, run_id: str) -> None:
+    """A workflow reaching `completed` is a confirmed outcome (section 13):
+    the planner's evidence for entering it (a supplier's own mail,
+    typically) is now acted on, not just proposed. Stashed at planning
+    time in run state, since the approval record alone doesn't carry it.
+    """
+
+    run = get_run(conn, run_id)
+    state = json.loads(run["state"])
+    item_facts = state.get("item_facts", {})
+    supplier_id = item_facts.get("supplier_id")
+    inbound_po_id = item_facts.get("inbound_po_id")
+    if not supplier_id or not inbound_po_id or inbound_po_id == "none":
+        return
+    mail_ids = state.get("context_record_ids", {}).get("mail", [])
+    write_fact(
+        conn, clock, subject=supplier_id,
+        fact=f"{supplier_id} was rerouted away from {inbound_po_id} after a confirmed delay.",
+        source_ids=mail_ids or [inbound_po_id],
+    )
 
 
 def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, approval_id: str, decided_by: str) -> None:
@@ -178,6 +220,8 @@ def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, ap
         if instance_row is not None:
             final_row = resume_after_approval(conn, clock, llm_client, instance_row["instance_id"])
             set_run_status(conn, approval["run_id"], final_row["status"])
+            if final_row["status"] == "completed":
+                _write_completion_fact(conn, clock, approval["run_id"])
     # A free-form (workflow is None) approved plan's execution is phase 6's
     # tool runner; nothing to do here yet for that path.
 

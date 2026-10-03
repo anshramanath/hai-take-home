@@ -228,14 +228,25 @@ one line each, adding the new detector/provider to their lists (the kind of chan
 `flag_shortage` (see Notes). `app.py`, wiring the free-form runner into `approve()`, the
 one piece of orchestration deliberately left unfinished until Scenario B needed it.
 
-**Core files that did not change in any behavioral way**: `planning/planner.py`,
-`planning/prompt.py`, `policy/gate.py`, `policy/approvals.py`, `audit/log.py`,
-`audit/explain.py`. Two of these (`gate.py`, `prompt.py`) had one line of comment or
-docstring wording adjusted (an incidental, harmless match on the word "lot" in ordinary
-English, not Scenario B content). `test_part3_planner_gate_and_audit_have_no_references_to_lots_or_quality`
-greps the actual files and proves they contain no scenario-specific reference to lots or
-quality; it is evidence that the core stayed generic, not evidence that the files are
+**Core files that did not change in any behavioral way to make Scenario B work at
+all**: `policy/gate.py`, `policy/approvals.py`, `audit/log.py`, `audit/explain.py`.
+`gate.py` had one line of comment wording adjusted (an incidental, harmless match on the
+word "lot" in ordinary English, not Scenario B content).
+`test_part3_planner_gate_and_audit_have_no_references_to_lots_or_quality` greps the
+actual files and proves they contain no scenario-specific reference to lots or quality;
+it is evidence that the core stayed generic, not evidence that the files are
 byte-identical to before.
+
+`planning/planner.py`, `planning/prompt.py`, and `execution/engine.py` did **not** need
+to change for Scenario B to pass its own tests with `FakeLLMClient`, but changed later,
+in the same phase that drove Scenario B against the real OpenAI API for the first time
+(see **Notes**): `prompt.py` now filters the workflow catalog by the attention item's
+`detector`, `engine.py` gained `applies_to_detectors` and the filtering function behind
+it, and `planner.py` now builds its output schema per detector and gives retries a more
+specific message. None of this is lot or quality specific (the same static grep test
+still passes on all three); the changes exist because a real, non-deterministic model
+needed a narrower schema and a clearer retry to behave reliably on the free-form path,
+not because Scenario B's own logic required anything scenario-specific in the core.
 
 ## Notes
 

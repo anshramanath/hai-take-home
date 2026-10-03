@@ -15,6 +15,7 @@ from datetime import timedelta
 
 from harness.audit.log import log as audit_log
 from harness.scheduling.clock import Clock
+from harness.world.users import User
 
 
 def write_fact(
@@ -44,20 +45,23 @@ def write_fact(
     return fact_id
 
 
-def facts_for_prompt(conn: sqlite3.Connection, clock: Clock) -> list[dict]:
-    """Every non-expired fact, shaped for the planner's prompt. Small
-    enough in this harness that it isn't worth narrowing by subject; a
-    real deployment would scope this to the item's part/supplier and to
-    what the requesting user may see.
+def facts_for_prompt(conn: sqlite3.Connection, clock: Clock, user: User) -> list[dict]:
+    """Every non-expired fact the user may see, shaped for the planner's
+    prompt. Section 9's scoping rule applies to memory too (F4): a fact
+    written from ERP data is only shown to a user who holds the read scope
+    for that data, same as a live provider would. `visible_to_scope=None`
+    means the fact carries no permission-sensitive content (none written
+    today do) and is visible to everyone, same as before this existed.
     """
 
     today = clock.today().isoformat()
     rows = conn.execute(
-        "SELECT subject, fact, source_ids FROM memory_facts "
+        "SELECT subject, fact, source_ids, visible_to_scope FROM memory_facts "
         "WHERE expires_at IS NULL OR expires_at >= ?",
         (today,),
     ).fetchall()
     return [
         {"subject": row[0], "fact": row[1], "source_ids": json.loads(row[2])}
         for row in rows
+        if row[3] is None or row[3] in user.scopes
     ]

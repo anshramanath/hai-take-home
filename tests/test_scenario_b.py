@@ -59,6 +59,26 @@ def test_scenario_b_covers_reallocates_and_notifies_supervisor(make_harness):
     assert h.conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
 
 
+def test_scenario_b_covers_touches_only_the_70_plus_30_split_leaving_4831_alone(make_harness):
+    """T9 (Tier 2): the covers variant allocates exactly 70 (L-2101) + 30
+    (L-2115) to 4820; L-2115's other 50 units, already allocated to 4831,
+    must be untouched by this reallocation, not merely absent from a
+    query scoped to 4820.
+    """
+
+    h = make_harness("scenario_b_covers")
+    llm = FakeLLMClient([PlannerOutput(proposal=_covers_plan())])
+
+    tick(h.conn, h.clock, llm)
+    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-202")
+
+    all_l2115 = dict(h.conn.execute(
+        "SELECT prod_order_id, qty FROM erp_lot_allocations WHERE lot_id = 'L-2115'"
+    ).fetchall())
+    assert all_l2115 == {"4820": 30, "4831": 50}
+
+
 def test_scenario_b_shortage_flags_purchasing_and_dana_recommends_only(make_harness):
     h = make_harness("scenario_b_shortage")
     llm = FakeLLMClient([

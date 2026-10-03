@@ -20,6 +20,7 @@ undisturbed Scenario A story.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -103,7 +104,7 @@ def run_scenario_a(console: Console, harness: Harness, llm_client: LLMClient, *,
         "SELECT * FROM approvals ORDER BY requested_at DESC LIMIT 1"
     ).fetchone()
     console.print(
-        f"Approval requested: [bold]{approval['approval_id']}[/bold] -> approver "
+        f"Approval requested: [bold]{approval['approval_id']}[/bold], approver "
         f"[cyan]{approval['approver_id']}[/cyan] (value threshold check passed)."
     )
     console.print("[dim]No answer today.[/dim]")
@@ -135,11 +136,20 @@ def run_scenario_a(console: Console, harness: Harness, llm_client: LLMClient, *,
         )
 
         console.rule("[bold]Follow-up: confirming the replacement arrived[/bold]")
+        # The receipt is recorded before any further tick, deliberately:
+        # the arrival check only ever asks "did it arrive", never "will
+        # it", so the fact it checks has to already exist when it runs.
         record_receipt(harness.conn, harness.clock, po_id=new_po["po_id"], qty=new_po["qty"])
         console.print(f"Receipt recorded for {new_po['po_id']}: {new_po['qty']} units.")
         task = harness.conn.execute("SELECT run_at FROM scheduled_tasks").fetchone()
-        while harness.clock.today().isoformat() < task["run_at"]:
-            tick(harness.conn, harness.clock, llm_client)
+        due = date.fromisoformat(task["run_at"])
+        # Skip straight to the due date rather than ticking through the
+        # days in between: a day with nothing due still reruns detection,
+        # which has nothing useful to find before then and would call the
+        # planner again for no reason.
+        days_until_due = (due - harness.clock.today()).days
+        if days_until_due > 0:
+            harness.clock.advance(days_until_due)
         follow_up_result = tick(harness.conn, harness.clock, llm_client)
         if follow_up_result["fired_tasks"]:
             console.print(f"[green]Arrival check fired[/green] on {task['run_at']}: receipt confirmed in full.")
@@ -175,7 +185,7 @@ def run_scenario_b(console: Console, db_dir: Path) -> None:
     ))])
     result = tick(h.conn, h.clock, llm)
     approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
-    console.print(f"Detected: {result['new_items']}. Approval: {approval['approval_id']} -> {approval['approver_id']}.")
+    console.print(f"Detected: {result['new_items']}. Approval: {approval['approval_id']} routed to {approval['approver_id']}.")
     approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
     allocations = dict(h.conn.execute(
         "SELECT lot_id, qty FROM erp_lot_allocations WHERE prod_order_id = '4820'"
@@ -253,11 +263,11 @@ def run_failure_cases(console: Console, db_dir: Path) -> None:
     omar = get_user(h.conn, "u-202")
     steps = [ToolCall(tool="create_po", args={
         "po_id": "PO-X", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 10, "unit_price": 1.0,
-        "promised_date": "2026-09-04", "created_by": "u-202",
+        "needed_by": "2026-09-04", "created_by": "u-202",
     })]
     result = gate(h.conn, omar, steps, workflow="workflow:reroute_po")
     assert isinstance(result, Blocked)
-    console.print(f"Missing scope blocked: Omar proposing create_po -> [red]{result.reason}[/red]")
+    console.print(f"Missing scope blocked: Omar proposing create_po: [red]{result.reason}[/red]")
     h.close()
 
     # Process crash and resume without duplicates.

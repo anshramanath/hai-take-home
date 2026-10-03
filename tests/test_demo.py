@@ -52,3 +52,20 @@ def test_demo_runs_to_completion_with_replay_and_contains_key_facts():
     ]
     for fact in key_facts:
         assert fact in text, f"missing key fact: {fact!r}"
+
+
+def test_demo_follow_up_fires_at_the_new_pos_own_arrival_date():
+    """"Tuesday" in the assignment's worked example is that scenario's
+    stand-in for "whenever the replacement PO is promised to arrive", not
+    an independent calendar target: the check fires there, and the demo
+    does not pad out extra ticks afterward to land on a specific date.
+    """
+
+    console = Console(record=True, width=120)
+    llm_client = ReplayClient(REPLAY_PATH)
+
+    run_demo(console, llm_client, interactive=False)
+
+    text = console.export_text()
+    assert "Arrival check fired" in text
+    assert "receipt confirmed in full" in text

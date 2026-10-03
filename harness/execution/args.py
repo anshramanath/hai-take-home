@@ -15,6 +15,11 @@ class CreatePoArgs(BaseModel):
     it be part of the frozen, approved plan: later steps (the notification,
     the arrival-check schedule) need to reference the new PO's id, and
     nothing may be computed between approval and execution.
+
+    `needed_by` is a frozen decision (approved by the human). `promised_date`
+    is not: it is a fact the supplier system hands back at order-placement
+    time, a function of execution-time "today" plus the supplier's lead
+    time, and belongs to the tool's run(), not the approved args.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -24,7 +29,7 @@ class CreatePoArgs(BaseModel):
     supplier_id: str
     qty: int = Field(gt=0)
     unit_price: float = Field(gt=0)
-    promised_date: str
+    needed_by: str
     created_by: str
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from harness.memory.facts import facts_for_prompt, write_fact
+from harness.world.users import get_user
 
 
 def test_write_fact_records_source_ids_and_is_audited(make_harness):
@@ -32,7 +33,8 @@ def test_expired_facts_are_not_included_in_the_prompt(make_harness):
 
     h.clock.advance(5)  # the second fact's expiry (1 day out) is now in the past
 
-    facts = facts_for_prompt(h.conn, h.clock)
+    dana = get_user(h.conn, "u-101")
+    facts = facts_for_prompt(h.conn, h.clock, dana)
     subjects = {f["subject"] for f in facts}
 
     assert subjects == {"S-Y"}
@@ -44,8 +46,30 @@ def test_facts_with_no_expiry_never_filtered(make_harness):
 
     h.clock.advance(365)
 
-    facts = facts_for_prompt(h.conn, h.clock)
+    dana = get_user(h.conn, "u-101")
+    facts = facts_for_prompt(h.conn, h.clock, dana)
     assert any(f["subject"] == "S-Z" for f in facts)
+
+
+def test_purchasing_fact_is_hidden_from_a_user_without_po_read_but_shown_to_one_with_it(make_harness):
+    """F4: facts_for_prompt is permission-scoped, the same way a live
+    provider is (section 9). A fact written from PO/supplier data is
+    visible only to someone who holds erp:po:read; Omar (Quality Manager,
+    no erp:po:* at all) must not see it, while Dana does.
+    """
+
+    h = make_harness("scenario_a")
+    write_fact(
+        h.conn, h.clock, subject="S-Y",
+        fact="S-Y slipped PO-77812 from 9/4 to 9/8.", source_ids=["M-001"],
+        visible_to_scope="erp:po:read",
+    )
+
+    dana = get_user(h.conn, "u-101")
+    omar = get_user(h.conn, "u-202")
+
+    assert any(f["subject"] == "S-Y" for f in facts_for_prompt(h.conn, h.clock, dana))
+    assert not any(f["subject"] == "S-Y" for f in facts_for_prompt(h.conn, h.clock, omar))
 
 
 def test_a_misleading_memory_fact_does_not_change_gate_or_workflow_results(make_harness):

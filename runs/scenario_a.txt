@@ -1,27 +1,27 @@
 ──────────────────────── Scenario A: at-risk part, supplier delay, reroute ─────────────────────────
 Today is 2026-09-02. Running the first tick...
-Detected: ['AI-6DFCBCE2']. Run(s) started: ['RUN-B3E862C1'].
-Approval requested: AP-35D3AF5D -> approver u-101 (value threshold check passed).
+Detected: ['AI-248454CD']. Run(s) started: ['RUN-C7A86349'].
+Approval requested: AP-B6F516D2, approver u-101 (value threshold check passed).
 No answer today.
 Ticking to the next day...
 Escalated: u-101 was out of office; routed to u-102. Reason: u-101 had not responded by end of day 
 and is out of office 2026-09-04; routed to u-102
 Approved as u-102 (non-interactive).
-Executed: created PO-28F7E823 (120 units, S-Z, promised 2026-09-04); reduced PO-77812 to 280 units 
+Executed: created PO-D6EF6B9E (120 units, S-Z, promised 2026-09-06); reduced PO-77812 to 280 units 
 (open); production notified; arrival check scheduled.
 ────────────────────────── Follow-up: confirming the replacement arrived ───────────────────────────
-Receipt recorded for PO-28F7E823: 120 units.
-Arrival check fired on 2026-09-04: receipt confirmed in full.
+Receipt recorded for PO-D6EF6B9E: 120 units.
+Arrival check fired on 2026-09-06: receipt confirmed in full.
 ────────────────────────── Explain: Scenario A, from the audit log alone ───────────────────────────
 [2026-09-02 #1] detection (stockout): Part P-4471 is projected to cover production order 4812 (thin 
-margin): needs 120, projected balance 400. [AI-6DFCBCE2]
+margin): needs 120, projected balance 400. [AI-248454CD]
 [2026-09-02 #2] context for u-101: calendar ['E-001', 'E-002'], erp ['P-4471', '4812', 'PO-77812', 
 'S-Y', 'S-Z', 'S-Q', 'S-W'], mail ['M-001'], quality []
-[2026-09-02 #3] planner: workflow - reason: The original purchase order 'PO-77812' for part P-4471 
-has a promised delivery date that was confirmed as delayed (originally promised for 2026-09-04) 
-based on the email from the supplier on 2026-09-01 indicating a revised ship date of 2026-09-07. 
-Since the production order 4812 needs 120 units of this part by 2026-09-07, it is necessary to 
-reroute the order to ensure timely fulfillment.
+[2026-09-02 #3] planner: workflow - reason: The supplier's email indicates that the revised ship 
+date is now Monday 9/7, meaning the delivery will be on 9/8. This puts the delivery after the needed
+date of 9/7 for the production order 4812, which requires 120 units of part P-4471. Therefore, the 
+original purchase order is at risk and requires rerouting to ensure the required quantity arrives on
+time from an alternate supplier.
 [2026-09-02 #4] workflow step started: confirm_supplier_approved
 [2026-09-02 #5] workflow step completed: confirm_supplier_approved {'candidates': ['S-Y', 'S-Z', 
 'S-W'], 'excluded_by_approval': [{'reason': 'not approved for this part', 'supplier_id': 'S-Q'}, 
@@ -32,37 +32,38 @@ reroute the order to ensure timely fulfillment.
 'S-Y'}, {'reason': 'eta 2026-09-11 misses needed_by 2026-09-07', 'supplier_id': 'S-W'}]}
 [2026-09-02 #8] workflow step started: choose_supplier
 [2026-09-02 #9] workflow step completed: choose_supplier {'chosen_supplier': 'S-Z', 
-'supplier_justification': 'Meridian Drives has the shortest lead time of 2 days, making them the 
-best choice for the urgent reroute.'}
+'supplier_justification': 'Meridian Drives offers the shortest lead time of 2 days, making them the 
+best choice for urgent parts reroute.'}
 [2026-09-02 #10] workflow step started: draft_notification
 [2026-09-02 #11] workflow step completed: draft_notification {'notification_draft': 'Dear Production
-Team,\n\nPlease be advised that we have rerouted parts for Production Order 4812. The new supplier 
-for the part ID P-4471 is now S-Z. \n\nEnsure that all necessary adjustments are made in the 
-production schedule to accommodate this change. \n\nThank you for your attention to this 
-matter.\n\nBest regards,\n\n[Your Name]'}
+Team,\n\nPlease be advised that there has been a reroute of parts for Production Order ID 4812. The 
+new supplier for part P-4471 is now S-Z. \n\nMake sure to adjust your records accordingly and 
+accommodate any changes needed in the production schedule.\n\nThank you for your attention to this 
+matter.'}
 [2026-09-02 #12] gate: allowed, approver u-101
-[2026-09-02 #13] approval requested: AP-35D3AF5D -> u-101
+[2026-09-02 #13] approval requested: AP-B6F516D2, approver u-101
 [2026-09-03 #14] escalation: u-101 had not responded by end of day and is out of office 2026-09-04; 
 routed to u-102
 [2026-09-03 #15] detection (stockout): already known 
-[2026-09-04 #16] approval AP-35D3AF5D approved by u-102
+[2026-09-04 #16] approval AP-B6F516D2 approved by u-102
 [2026-09-04 #17] workflow step started: create_po
-[2026-09-04 #18] executed create_po: {'po_id': 'PO-28F7E823', 'total_value': 5580.0}
-[2026-09-04 #19] workflow step completed: create_po
+[2026-09-04 #18] executed create_po: {'po_id': 'PO-D6EF6B9E', 'promised_date': '2026-09-06', 
+'total_value': 5580.0}
+[2026-09-04 #19] workflow step completed: create_po {'new_promised_date': '2026-09-06'}
 [2026-09-04 #20] workflow step started: reduce_original_po
 [2026-09-04 #21] executed reduce_po: {'po_id': 'PO-77812', 'previous_qty': 400, 'previous_status': 
 'open'}
 [2026-09-04 #22] workflow step completed: reduce_original_po
 [2026-09-04 #23] workflow step started: notify_production
-[2026-09-04 #24] executed notify_user: {'notification_id': 'N-04F17964', 'subject': 'Parts reroute 
+[2026-09-04 #24] executed notify_user: {'notification_id': 'N-796E0DBA', 'subject': 'Parts reroute 
 for production order 4812', 'to_user': 'u-301'}
 [2026-09-04 #25] workflow step completed: notify_production
 [2026-09-04 #26] workflow step started: schedule_arrival_check
-[2026-09-04 #27] executed schedule_check: {'kind': 'arrival_check', 'run_at': '2026-09-04', 
-'task_id': 'T-1BB4A9B0'}
+[2026-09-04 #27] executed schedule_check: {'kind': 'arrival_check', 'run_at': '2026-09-06', 
+'task_id': 'T-BAF394F4'}
 [2026-09-04 #28] workflow step completed: schedule_arrival_check
 [2026-09-04 #29] memory: S-Y was rerouted away from PO-77812 after a confirmed delay. (source 
 ['M-001'])
-[2026-09-04 #30] scheduled task fired: arrival_check [T-1BB4A9B0]
-[2026-09-04 #31] arrival check: confirmed [PO-28F7E823] received 120/120
-[2026-09-04 #32] memory: S-Z delivered PO-28F7E823 in full, as promised. (source ['PO-28F7E823'])
+[2026-09-06 #30] scheduled task fired: arrival_check [T-BAF394F4]
+[2026-09-06 #31] arrival check: confirmed [PO-D6EF6B9E] received 120/120
+[2026-09-06 #32] memory: S-Z delivered PO-D6EF6B9E in full, as promised. (source ['PO-D6EF6B9E'])

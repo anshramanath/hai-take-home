@@ -113,7 +113,7 @@ def test_a4_gate_blocks_before_any_write(make_harness):
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
         "po_id": "PO-X", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 10, "unit_price": 1.0,
-        "promised_date": "2026-09-04", "created_by": "u-101",
+        "needed_by": "2026-09-04", "created_by": "u-101",
     })]  # workflow-only tool proposed free-form: must be blocked before anything runs
 
     result = gate(h.conn, dana, steps, workflow=None)
@@ -419,7 +419,7 @@ def test_permission_model_tools_never_run_without_scope(make_harness):
     tool = get_tool("create_po")
     args = CreatePoArgs(
         po_id="PO-X", part_id="P-4471", supplier_id="S-Z", qty=10, unit_price=1.0,
-        promised_date="2026-09-04", created_by="u-202",
+        needed_by="2026-09-04", created_by="u-202",
     )
     ctx = ToolContext(run_id="run-1", step="s", today=h.clock.today())
 

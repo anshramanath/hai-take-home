@@ -162,15 +162,27 @@ def approved_args(state: dict[str, Any], tool_name: str) -> dict[str, Any]:
     raise KeyError(f"no approved plan step found for tool {tool_name}")
 
 
-def run_approved_action(ctx: StepContext, tool_name: str, step_name: str) -> dict[str, Any]:
+def run_approved_action(
+    ctx: StepContext, tool_name: str, step_name: str, *, overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Shared body for every action step: look up this step's args from the
     approved, hash-verified plan (never recomputed), execute through the
     one shared executor, and append a compensation-log entry so a later
     failure can be backed out in reverse.
+
+    `overrides` is not recomputing a decision: it substitutes a system fact
+    an earlier step's own result produced (F3's `promised_date`, which the
+    supplier system only hands back at order-placement time) into a
+    placeholder the frozen plan carried instead of a value nobody could
+    have approved ahead of time. Every field a human actually approved
+    still comes only from the frozen plan.
     """
 
     tool = get_tool(tool_name)
-    args = tool.input_schema.model_validate(approved_args(ctx.state, tool_name))
+    raw_args = dict(approved_args(ctx.state, tool_name))
+    if overrides:
+        raw_args.update(overrides)
+    args = tool.input_schema.model_validate(raw_args)
     tool_ctx = ToolContext(run_id=f"{ctx.run_id}:{ctx.instance_id}", step=step_name, today=ctx.clock.today())
     result = execute_tool(
         ctx.conn, ctx.clock, tool, args, tool_ctx,

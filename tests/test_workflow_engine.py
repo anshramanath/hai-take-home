@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -15,6 +16,7 @@ from harness.execution.engine import (
     UnknownWorkflowDefinition,
     enter_workflow,
     get_definition,
+    get_instance,
     register,
     resume_after_approval,
     resume_all,
@@ -192,6 +194,206 @@ def test_no_qualifying_supplier_halts_with_zero_writes_and_no_free_form_fallback
 
 
 # ---------------------------------------------------------------------------
+# F1/F2: params validated in code, not just prompt wording
+
+
+def test_a_production_order_id_in_place_of_original_po_id_halts_with_no_writes(make_harness):
+    """F1: a real model once proposed reroute_po for a quality-hold item
+    with a production order id standing in for original_po_id. The gate
+    against that must be code, not prompt wording.
+    """
+
+    h = make_harness("scenario_a")
+    bad_params = {**PARAMS, "original_po_id": "4820"}  # a prod_order_id, not a PO
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, bad_params, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+    assert h.conn.execute("SELECT COUNT(*) FROM executed_actions").fetchone()[0] == 0
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
+    assert "workflow.halted" in events
+
+
+def test_original_po_id_that_is_not_open_halts(make_harness):
+    h = make_harness("scenario_a")
+    h.conn.execute("UPDATE erp_purchase_orders SET status = 'cancelled' WHERE po_id = 'PO-77812'")
+    h.conn.commit()
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, PARAMS, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_nonexistent_prod_order_id_halts(make_harness):
+    h = make_harness("scenario_a")
+    bad_params = {**PARAMS, "prod_order_id": "9999"}
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, bad_params, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_original_po_id_for_the_wrong_part_halts(make_harness):
+    h = make_harness("scenario_a")
+    bad_params = {**PARAMS, "original_po_id": "PO-77900"}  # a real PO, but for P-2210
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, bad_params, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_prod_order_id_that_does_not_consume_the_part_halts(make_harness):
+    h = make_harness("scenario_a")
+    bad_params = {**PARAMS, "prod_order_id": "4900"}  # real order, doesn't use P-4471
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, bad_params, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_qty_exceeding_the_original_pos_open_quantity_halts(make_harness):
+    """F2: qty must be bounded by the original PO's open quantity *before*
+    approval; otherwise reduce_po (step 6) would be the one to discover
+    this, after create_po (step 5) already wrote a new PO.
+    """
+
+    h = make_harness("scenario_a")
+    bad_params = {**PARAMS, "qty": 500}  # PO-77812 only has 400 open
+    dana = get_user(h.conn, "u-101")
+    row = enter_workflow(h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, bad_params, run_id="run-1", requester=dana)
+
+    assert row["status"] == "halted_invalid_params"
+    assert h.conn.execute("SELECT COUNT(*) FROM executed_actions").fetchone()[0] == 0
+
+
+def test_zero_qty_rejected_by_the_params_schema(make_harness):
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    with pytest.raises(ValidationError):
+        enter_workflow(
+            h.conn, h.clock, GOOD_LLM(), REROUTE_PO_V1, {**PARAMS, "qty": 0}, run_id="run-1", requester=dana,
+        )
+
+
+def test_valid_params_still_pass_through_unaffected(make_harness):
+    h = make_harness("scenario_a")
+    row, _, _ = _enter_and_approve(h)
+    assert row["status"] == "awaiting_approval"
+
+
+def test_model_supplied_price_is_ignored_the_frozen_plan_uses_erp_pricing(make_harness):
+    """F2: unit_price has no field on RerouteParams at all, so there is
+    nothing for a model to supply here; the frozen plan's create_po step
+    always carries the chosen supplier's own ERP price.
+    """
+
+    h = make_harness("scenario_a")
+    row, _, _ = _enter_and_approve(h)
+    approval = h.conn.execute("SELECT plan_json FROM approvals").fetchone()
+    plan = json.loads(approval["plan_json"])
+    create_step = next(s for s in plan["steps"] if s["tool"] == "create_po")
+    assert create_step["args"]["unit_price"] == 46.50  # S-Z's ERP price for P-4471
+
+
+# ---------------------------------------------------------------------------
+# F3: promised_date is a fact set at execution, not frozen into the plan
+
+
+def test_promised_date_reflects_execution_time_not_approval_time(make_harness):
+    """Entered (and its steps 1-4 run) on 9/2; approval doesn't land until
+    9/3. Z's 2-day lead time must be measured from 9/3 (execution), giving
+    9/5, not from 9/2 (planning), which would have given 9/4.
+    """
+
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    h.clock.advance(1)  # 9/2 -> 9/3
+    decide(h.conn, h.clock, approval_id=json.loads(row["state"])["_approval_id"], decided_by="u-101", decision="approved")
+    final = resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+
+    assert final["status"] == "completed"
+    new_po = h.conn.execute("SELECT promised_date FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()
+    assert new_po["promised_date"] == "2026-09-05"
+    task = h.conn.execute("SELECT run_at FROM scheduled_tasks WHERE kind = 'arrival_check'").fetchone()
+    assert task["run_at"] == "2026-09-05"
+
+
+def test_approval_too_late_for_lead_time_is_refused_at_execution_with_nothing_written(make_harness):
+    """Candidate filtering (step 2) checked this on 9/2, when S-Z still
+    cleared needed_by 2026-09-07. If approval doesn't land until 9/6,
+    execution must re-discover that 9/6 + 2 days = 9/8 misses needed_by,
+    and refuse before writing anything, rather than trusting the stale
+    pre-approval check.
+    """
+
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    h.clock.advance(4)  # 9/2 -> 9/6: too late for a 2-day lead time to meet 9/7
+    decide(h.conn, h.clock, approval_id=json.loads(row["state"])["_approval_id"], decided_by="u-101", decision="approved")
+    final = resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+
+    assert final["status"] == "compensated"
+    assert h.conn.execute("SELECT COUNT(*) FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()[0] == 0
+    assert h.conn.execute(
+        "SELECT qty FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()[0] == 400  # original PO untouched
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
+    assert "action.precheck_failed" in events
+
+
+def test_every_created_po_meets_its_own_lead_time_from_order_date(make_harness):
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    decide(h.conn, h.clock, approval_id=json.loads(row["state"])["_approval_id"], decided_by="u-101", decision="approved")
+    resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+
+    new_po = h.conn.execute(
+        "SELECT ordered_date, promised_date, supplier_id FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()
+    lead_time_days = h.conn.execute(
+        "SELECT lead_time_days FROM erp_suppliers WHERE supplier_id = ?", (new_po["supplier_id"],)
+    ).fetchone()[0]
+    ordered = date.fromisoformat(new_po["ordered_date"])
+    promised = date.fromisoformat(new_po["promised_date"])
+    assert promised >= ordered + timedelta(days=lead_time_days)
+
+
+# ---------------------------------------------------------------------------
+# T6 (Tier 2): execution-time re-check
+
+
+def test_supplier_unapproved_after_approval_is_refused_at_execution_with_nothing_written(make_harness):
+    """Section 11: "approval says a human agreed; the re-check says it is
+    still allowed now." Approve normally, then revoke S-Z's approval for
+    the part (as if someone pulled it in the ERP moments later), before
+    resuming. create_po's precheck must catch this at execution, same as
+    it would for a plan that was never approved at all.
+    """
+
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    decide(h.conn, h.clock, approval_id=json.loads(row["state"])["_approval_id"], decided_by="u-101", decision="approved")
+
+    h.conn.execute("UPDATE erp_suppliers SET approved_parts = '[]' WHERE supplier_id = 'S-Z'")
+    h.conn.commit()
+
+    final = resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+
+    assert final["status"] == "compensated"
+    assert h.conn.execute("SELECT COUNT(*) FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()[0] == 0
+    assert h.conn.execute(
+        "SELECT qty, status FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()[:] == (400, "open")
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
+    assert "action.precheck_failed" in events
+
+
+# ---------------------------------------------------------------------------
 # Resumption and the crash hook
 
 
@@ -279,6 +481,86 @@ def test_failure_in_notify_production_compensates_steps_six_and_five_in_reverse(
     assert events.count("action.compensated") == 2
 
 
+def test_crash_partway_through_compensation_resumes_and_finishes_without_double_reversal(make_harness):
+    """T7 (Tier 2): notify_production (step 7) fails, so the engine tries
+    to compensate steps 6 and 5 in reverse. Force the *compensation* of
+    step 6 (restore_po) to crash the process after it succeeds but before
+    step 5's compensation (cancel_po) runs -- `_compensate_all` has no
+    partial-progress bookkeeping of its own, so this relies entirely on
+    idempotency: a fresh `_run()` on restart redoes the whole failing
+    step, which means redoing the whole compensation loop, and the first
+    (already-executed) compensation call must be skipped, not repeated.
+    """
+
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    state = json.loads(row["state"])
+    decide(h.conn, h.clock, approval_id=state["_approval_id"], decided_by="u-101", decision="approved")
+
+    original_notify = catalog_module.TOOLS["notify_user"]
+    original_cancel_po = catalog_module.TOOLS["cancel_po"]
+
+    def _notify_boom(db, args, ctx):
+        raise RuntimeError("simulated notify_user failure")
+
+    def _cancel_po_boom(db, args, ctx):
+        raise RuntimeError("simulated crash while compensating create_po")
+
+    catalog_module.TOOLS["notify_user"] = replace(original_notify, run=_notify_boom)
+    catalog_module.TOOLS["cancel_po"] = replace(original_cancel_po, run=_cancel_po_boom)
+    try:
+        with pytest.raises(RuntimeError, match="simulated crash while compensating create_po"):
+            resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+    finally:
+        catalog_module.TOOLS["cancel_po"] = original_cancel_po
+        # notify_user keeps failing: the underlying reason compensation
+        # was needed at all has not gone away on "restart".
+
+    # restore_po (step 6's compensation) already completed before the
+    # simulated crash; cancel_po (step 5's) did not.
+    original_po = h.conn.execute(
+        "SELECT qty, status FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()
+    assert (original_po["qty"], original_po["status"]) == (400, "open")
+    new_po_status = h.conn.execute(
+        "SELECT status FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()[0]
+    assert new_po_status == "open"  # not yet cancelled; the crash happened first
+    restore_count_before = h.conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE event = 'action.compensated'"
+    ).fetchone()[0]
+    assert restore_count_before == 1  # only restore_po made it through
+
+    # "Restart": a fresh resume_all() call, with cancel_po healed and
+    # notify_user still broken (the original failure is still the reason
+    # this instance needs compensating at all).
+    try:
+        resume_all(h.conn, h.clock, llm)
+    finally:
+        catalog_module.TOOLS["notify_user"] = original_notify
+
+    final = get_instance(h.conn, row["instance_id"])
+    assert final["status"] == "compensated"
+    new_po_status = h.conn.execute(
+        "SELECT status FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()[0]
+    assert new_po_status == "cancelled"
+    original_po = h.conn.execute(
+        "SELECT qty, status FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()
+    assert (original_po["qty"], original_po["status"]) == (400, "open")
+
+    # restore_po's compensation ran exactly once in total, not twice.
+    compensated_events = [
+        r[0] for r in h.conn.execute(
+            "SELECT detail FROM audit_log WHERE event = 'action.compensated' AND run_id = 'run-1'"
+        )
+    ]
+    assert len(compensated_events) == 2  # restore_po once, cancel_po once
+    restore_po_mentions = sum(1 for d in compensated_events if "restore_po" in d)
+    assert restore_po_mentions == 1
+
+
 # ---------------------------------------------------------------------------
 # Versioning
 
@@ -364,6 +646,11 @@ def test_approved_args_raises_if_tool_is_not_in_the_approved_plan():
 def test_gate_blocked_at_approval_boundary_fails_the_instance(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
+    # Raise PO-77812's own open quantity so a 100000-unit reroute clears
+    # F2's qty-bound check (qty <= original PO's open quantity) and the
+    # gate's value threshold is what blocks it, not that check.
+    h.conn.execute("UPDATE erp_purchase_orders SET qty = 200000 WHERE po_id = 'PO-77812'")
+    h.conn.commit()
     huge_params = {**PARAMS, "qty": 100000}  # value far beyond even Marcus's limit
     llm = GOOD_LLM()
     row = enter_workflow(h.conn, h.clock, llm, REROUTE_PO_V1, huge_params, run_id="run-1", requester=dana)

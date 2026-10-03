@@ -54,6 +54,7 @@ def _handle_arrival_check(conn: sqlite3.Connection, clock: Clock, task: dict[str
             conn, clock, subject=supplier_id,
             fact=f"{supplier_id} delivered {po_id} in full, as promised.",
             source_ids=[po_id],
+            visible_to_scope="erp:po:read",
         )
         return
 

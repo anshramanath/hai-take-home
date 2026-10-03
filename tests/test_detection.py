@@ -185,6 +185,20 @@ def test_quality_hold_fires_for_l2093_4820_within_three_days(make_harness):
     assert facts["qty"] == 100
 
 
+def test_quality_hold_never_fires_for_the_unrelated_lot_tracked_noise_part(make_harness):
+    """T9 (Tier 2): L-3000 (P-5500) is seed noise for a different
+    lot-tracked part, present only to prove scoping. It is 'released',
+    not 'hold', so it should never raise anything regardless of part.
+    """
+
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM attention_items WHERE dedupe_key LIKE 'quality_hold:L-3000:%'"
+    ).fetchone()[0] == 0
+
+
 def test_quality_hold_does_not_fire_for_4831_too_far_out(make_harness):
     h = make_harness("scenario_b_covers")
     run_detectors(h.conn, h.clock)

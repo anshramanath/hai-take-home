@@ -536,6 +536,111 @@ at the end of this file.
 
 ---
 
+## Phase 9: post-build review (FIXES.md, three tiers)
+
+### What prompted it
+
+After phase 8, the four deliverables were fed to a separate review process (Claude, fed
+`BUILD_LOG.md` and the three docs), which produced `FIXES.md` — a list of suspected bugs
+and unverified claims. That first version carried its own "Decisions" framework (D1-D7)
+that would have changed tested behavior (approval authority, a new approval-expiry
+status) without being asked. A leaner, revised `FIXES (1).md` replaced it: real bugs and
+unmet requirements only (Tier 1), tests proving existing claims (Tier 2), and a docs pass
+(Tier 3), with an explicit rule — no new behavior, and stop and ask rather than build one
+in if a test seems to need it.
+
+### Tier 1: fixes
+
+Each item was verified against the actual code before any fix, per the lean doc's own
+rule ("some items may already be handled"). Five were real:
+
+- **F1.** Workflow params (`original_po_id`, `prod_order_id`) are now validated against
+  live ERP data at step 1, not just described in the workflow's prompt text — a
+  `_validate_params` check added to `reroute_po.py`, halting with `halted_invalid_params`
+  before any LLM call. This is the code-level version of phase 6's prompt-wording fix for
+  the same real failure (a model repurposing a production order id as a PO id).
+- **F2.** `qty` is now bounded by the original PO's open quantity, checked before
+  approval (previously only `qty > 0` was enforced, by the params schema). Fixed
+  `scenario_a_over_limit`, which asked for a 700-unit reroute from a PO that only had 400
+  open; raised the seed PO's own quantity to 800 so the variant is internally consistent.
+  `unit_price` was already code-sourced; no fix needed there, just a confirming test.
+- **F3.** `promised_date` moved from a value frozen into the plan at approval time to a
+  fact `create_po` computes at execution (today plus the chosen supplier's lead time),
+  refusing the write if it misses `needed_by`. Collected in deviation 5 below, since it
+  refines that deviation's own claim.
+- **F4.** Memory facts gained `visible_to_scope`, and `facts_for_prompt()` now takes the
+  requesting user and filters by it, matching the permission model every provider already
+  enforces.
+- **F5.** A process killed between `decide()` recording an approval and the execution that
+  follows it previously stranded that approval forever (`resume_all` only ever picked up
+  `running` workflow instances, never an approved-but-unexecuted free-form plan or a
+  workflow instance still sitting at `awaiting_approval`). Added
+  `resume_pending_executions()`, wired into `tick()`, covering both paths.
+
+Two more were found to already be correct, needing only a confirming test: F6 (MODEL.md's
+claim about supplier S-N was wrong, not the code: `ErpProvider` already excludes it for an
+unrelated part) and F8 (fresh `run_id`/`instance_id` uuids on every re-entry already make
+idempotency keys collide-proof, by construction).
+
+F7, as the review document stated it, was wrong on the merits: it asked the demo to tick
+forward to literally reach 2026-09-08 regardless of when the replacement PO's own ETA
+landed. "Tuesday" in the assignment's worked example is that example's own stand-in for
+"whenever the replacement arrives," not an independent calendar target this harness's own
+numbers need to hit; padding the demo out to a fixed date it has no other reason to reach
+would read as having missed that point, not honored it. Confirmed with the person who
+wrote `CLAUDE.md` before writing any code for it. The demo stops once the arrival check
+fires at the replacement's own promised date, same as before this review started.
+
+### Tier 2: tests that prove existing claims
+
+Eleven items (T1-T11), each either confirming an existing behavior with a new test or
+finding a small gap. Nine were already true: zero LLM calls after approval on both
+paths, every changed row traceable to an audited action, hash canonicalization across
+dict-key order and numeric-literal form, four static architecture boundaries (`explain`
+reads only `audit_log`; `policy/`/`execution/` never reference memory; `approvals.py`
+doesn't import `context/`; every schema table is used outside `world/`), the
+execution-time re-check catching a supplier revoked after approval, Scenario B's exact
+scoping (the noise lot-tracked part never surfaces anywhere; the covers split leaves the
+other lot's other allocation untouched), mail bodies never reaching `audit_log`, and every
+test name the docs cite actually existing.
+
+Two were real, both small:
+
+- **T5.** `approval.escalated`'s audit detail had a prose reason but not the specific
+  calendar event id it was based on. Added `ooo_event_id` to the detail.
+- **T7.** Found while testing "crash during compensation": `executor.compensate()` logged
+  `action.compensated` even when the underlying write was skipped as already-idempotent
+  (a retried compensation loop, after a crash mid-loop, replays entries that already
+  succeeded). The data itself was never written twice, idempotency already prevented
+  that, but the audit log claimed two reversals when only one happened. Fixed by checking
+  `executed_actions` before logging, not just before writing.
+
+T8 needed a new seed fixture, `scenario_a_prompt_injection`: one email, from the real
+relevant supplier contact so `MailProvider`'s relevance rule legitimately surfaces it,
+whose body tries to steer the agent directly. The point isn't proving a real model resists
+it (a scripted test can't prove that); it's proving that even a proposal matching the
+injected ask exactly (the same quantity, the same unapproved supplier) still gets rejected
+by the same code-level checks that would reject any other bad proposal.
+
+### Tier 3: docs
+
+All four docs rewritten for accuracy against the code as it now stands after Tiers 1-2,
+and for prose style (`CLAUDE.md`'s own "no em dashes or arrow characters" rule, which the
+original phase 8 drafts of `README.md`, `MODEL.md`, and `DESIGN.md` had not actually
+followed, found only when this review went looking). Two real `->` characters were also
+found and fixed in actual CLI/`explain` output (`harness/demo.py`, `harness/audit/explain.py`),
+not just doc prose.
+
+Deviation 5 (below) was updated in place for F3, rather than added as a new entry, since
+it refines the same claim rather than contradicting it. `README.md` gained a "Known
+limitations" section, separate from "What I cut": things the current build deliberately
+doesn't handle (escalation checking only "tomorrow," no approval expiry, rejection not
+notifying production, and others), each with one line of reasoning and one line of what
+I'd do next. These are the ideas from the original review that would have needed new
+behavior to fix; per the lean review doc's own rule, they're documented, not built.
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're
@@ -554,7 +659,22 @@ silently:
    the workflow's frozen, approved plan can reference the new PO's id before it exists.
 5. **Action steps inside a workflow read their args from the approved plan, never
    recompute them** (phase 3) — makes the approval hash check load-bearing rather than
-   cosmetic.
+   cosmetic. **Refined in the post-build review (Tier 1, F3):** this is "args are frozen,"
+   not "nothing may be computed." The frozen plan carries every value a human actually
+   approved (supplier, qty, price, `needed_by`); it does not carry `promised_date`,
+   because nobody approves a specific promised date, they approve a need-by deadline and
+   a supplier's lead time. `create_po` now computes `promised_date` itself, at execution,
+   from execution-time "today" plus the chosen supplier's lead time, and its own run()
+   refuses the write if that lands after `needed_by`. This matters because approval can be
+   delayed (escalation): a plan approved on 9/4 whose lead time is measured from 9/2 (when
+   steps 1-4 happened to run) would promise a date that was never actually achievable.
+   Downstream steps that need the real date (the notification body, `schedule_check`'s
+   `run_at`) carry a placeholder token in the frozen plan instead of a value nobody could
+   have approved ahead of time, substituted via a new `overrides` parameter on
+   `run_approved_action()` once `create_po`'s own result surfaces it into state. Still zero
+   LLM calls after approval, still nothing computed that a human didn't actually approve;
+   only a system fact a real supplier system would only return at order-placement time
+   moved to where it is actually knowable.
 6. **`tick()` advances the clock last, not first**, contrary to section 13's literal
    ordering (phase 4) — keeps `escalate_pending`'s already-tested "OOO tomorrow" semantics
    correct and matches the demo narrative's "tick on 9/2; detection..." framing.
@@ -589,3 +709,29 @@ silently:
     `FakeLLMClient`, regardless of whether a real API key is set** (phase 8) — only
     Scenario A has a recorded-run requirement; scripting the rest keeps a single replay
     fixture small and keeps the whole demo deterministic end to end.
+16. **A new workflow instance status, `halted_invalid_params`** (phase 9, F1), beyond
+    section 12's listed `running, awaiting_approval, completed, halted_no_supplier,
+    failed, compensated`. Raised by `reroute_po`'s new step-1 validation when
+    `original_po_id` or `prod_order_id` doesn't check out against live ERP data (wrong
+    part, not open, doesn't consume the part, or a quantity beyond what the original PO
+    has left to give). Kept distinct from `halted_no_supplier`, which is reserved for "no
+    candidate survived the supplier/lead-time checks," a different root cause than "the
+    params describing the problem don't match the ERP at all."
+17. **Re-planning after a gate rejection is not implemented** (section 3 lists it as
+    optional: "max 1 retry, logged. If skipped, report the rejection to the user"). A
+    gate-blocked proposal sets the run's status to `failed` with the reason stashed in
+    `runs.state`, visible through `explain`; no automatic second attempt is made. This is
+    the "skipped" branch the locked decision itself allows for, not an oversight, but it
+    had gone undocumented anywhere in the four deliverables until this review's pass
+    through the assignment's own requirements caught the gap.
+18. **No tool gets a bespoke audit event name; every write funnels through the generic
+    `action.executed`** (phase 2, noticed as a gap against section 13's literal event list
+    in this review). Section 13 names `schedule.created` alongside `schedule.fired` as
+    required event types; `schedule_check` only ever produces `action.executed` (detail:
+    `tool=schedule_check`, the created `task_id` and `run_at`), the same as every other
+    write tool, never a distinct `schedule.created`. Deliberate, not missed: `create_po`
+    has no `po.created` either, and introducing one bespoke event name would mean
+    introducing a second one for every other tool to stay consistent. `schedule.fired` is
+    the one genuinely different case: the scheduler noticing a task is due and dispatching
+    it is not a tool write going through `executor.execute()` at all, so it has no
+    `action.executed` counterpart to begin with and needs its own name.

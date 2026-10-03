@@ -10,15 +10,15 @@
         "qty": 120,
         "needed_by": "2026-09-07"
       },
-      "reasoning": "The original purchase order 'PO-77812' for part P-4471 has a promised delivery date that was confirmed as delayed (originally promised for 2026-09-04) based on the email from the supplier on 2026-09-01 indicating a revised ship date of 2026-09-07. Since the production order 4812 needs 120 units of this part by 2026-09-07, it is necessary to reroute the order to ensure timely fulfillment.",
-      "summary_for_user": "Proposing to reroute a portion of the purchase order 'PO-77812' for part 'P-4471' because the promised delivery is delayed, impacting production order '4812'."
+      "reasoning": "The supplier's email indicates that the revised ship date is now Monday 9/7, meaning the delivery will be on 9/8. This puts the delivery after the needed date of 9/7 for the production order 4812, which requires 120 units of part P-4471. Therefore, the original purchase order is at risk and requires rerouting to ensure the required quantity arrives on time from an alternate supplier.",
+      "summary_for_user": "We need to reroute the purchase order for part P-4471 due to a delayed shipment that cannot meet the production order deadline."
     }
   },
   {
     "supplier_id": "S-Z",
-    "justification": "Meridian Drives has the shortest lead time of 2 days, making them the best choice for the urgent reroute."
+    "justification": "Meridian Drives offers the shortest lead time of 2 days, making them the best choice for urgent parts reroute."
   },
   {
-    "body": "Dear Production Team,\n\nPlease be advised that we have rerouted parts for Production Order 4812. The new supplier for the part ID P-4471 is now S-Z. \n\nEnsure that all necessary adjustments are made in the production schedule to accommodate this change. \n\nThank you for your attention to this matter.\n\nBest regards,\n\n[Your Name]"
+    "body": "Dear Production Team,\n\nPlease be advised that there has been a reroute of parts for Production Order ID 4812. The new supplier for part P-4471 is now S-Z. \n\nMake sure to adjust your records accordingly and accommodate any changes needed in the production schedule.\n\nThank you for your attention to this matter."
   }
 ]

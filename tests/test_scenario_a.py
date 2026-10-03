@@ -79,7 +79,10 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
 
     task = h.conn.execute("SELECT kind, run_at FROM scheduled_tasks").fetchone()
     assert task["kind"] == "arrival_check"
-    assert task["run_at"] == "2026-09-04"  # Z's promised date, not Tuesday
+    # Approval lands on 9/4 (after escalation); Z's 2-day lead time is
+    # measured from execution-time "today" (F3), so the real promise is
+    # 9/6, not the 9/4 a plan approved on 9/2 would have frozen.
+    assert task["run_at"] == "2026-09-06"
 
     run_row = h.conn.execute("SELECT status FROM runs").fetchone()
     assert run_row["status"] == "completed"
@@ -87,7 +90,10 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
 
 def test_scenario_a_full_story_through_the_arrival_check(make_harness):
     """15.12: 9/2 detection through escalation, approval, execution, and
-    the follow-up firing at Z's ETA (2026-09-04) with a confirmed receipt.
+    the follow-up firing at Z's ETA with a confirmed receipt. Approval
+    lands on 9/4 (after escalation), so Z's real promised date (F3: lead
+    time measured from execution-time "today") is 9/6, not the 9/4 a plan
+    approved on 9/2 would have frozen.
     """
 
     h = make_harness("scenario_a")
@@ -100,11 +106,12 @@ def test_scenario_a_full_story_through_the_arrival_check(make_harness):
 
     new_po = h.conn.execute("SELECT po_id, qty FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()
     task = h.conn.execute("SELECT run_at, status FROM scheduled_tasks").fetchone()
-    assert task["run_at"] == "2026-09-04"
+    assert task["run_at"] == "2026-09-06"
     assert task["status"] == "pending"  # today is 2026-09-04 but tick() hasn't run again yet
 
     record_receipt(h.conn, h.clock, po_id=new_po["po_id"], qty=new_po["qty"])
-    result = tick(h.conn, h.clock, llm)  # 9/4 -> 9/5: the follow-up fires
+    h.clock.advance(2)  # 9/4 -> 9/6, skipping past days nothing is due
+    result = tick(h.conn, h.clock, llm)  # 9/6 -> 9/7: the follow-up fires
 
     task_id = h.conn.execute("SELECT task_id FROM scheduled_tasks").fetchone()["task_id"]
     assert task_id in result["fired_tasks"]
@@ -113,6 +120,68 @@ def test_scenario_a_full_story_through_the_arrival_check(make_harness):
     ).fetchone() is not None
     fact = h.conn.execute("SELECT subject FROM memory_facts WHERE subject = 'S-Z'").fetchone()
     assert fact is not None
+
+
+def test_missed_arrival_re_entry_gets_fresh_idempotency_keys_and_executes(make_harness):
+    """F8: re-entry after a missed arrival creates a brand new run and
+    workflow instance (fresh uuids), so the second reroute's actions carry
+    idempotency keys distinct from the first's; they must not be skipped
+    as "already executed".
+    """
+
+    h = make_harness("scenario_a")
+    llm = _reroute_llm()
+
+    tick(h.conn, h.clock, llm)  # 9/2 -> 9/3
+    tick(h.conn, h.clock, llm)  # 9/3 -> 9/4: escalates to Priya
+    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-102")
+
+    first_po = h.conn.execute(
+        "SELECT po_id FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()["po_id"]
+    first_keys = {
+        r[0] for r in h.conn.execute("SELECT idempotency_key FROM executed_actions")
+    }
+    assert len(first_keys) == 4  # create_po, reduce_po, notify_user, schedule_check
+
+    # No receipt recorded: advance to the first PO's promised date (9/6)
+    # without ticking through it, then tick once there so the arrival
+    # check fires and finds nothing received.
+    h.clock.advance(2)  # 9/4 -> 9/6
+    llm._responses.extend([
+        PlannerOutput(proposal=WorkflowRequest(
+            kind="workflow", workflow="reroute_po",
+            params={
+                "part_id": "P-4471", "original_po_id": first_po, "prod_order_id": "4812",
+                "qty": 120, "needed_by": "2026-09-10",
+            },
+            reasoning="Z also missed its promised date; rerouting again.",
+            summary_for_user="Reroute again to Supplier Z.",
+        )),
+        ChooseSupplierResponse(supplier_id="S-Z", justification="Still the only approved, on-time candidate."),
+        DraftNotificationResponse(body="Second reroute in progress."),
+    ])
+    tick(h.conn, h.clock, llm)  # 9/6 -> 9/7: arrival_check.missed, re-enters, re-plans
+
+    second_approval = h.conn.execute(
+        "SELECT approval_id FROM approvals WHERE status = 'pending'"
+    ).fetchone()
+    assert second_approval is not None
+    approve(h.conn, h.clock, llm, approval_id=second_approval["approval_id"], decided_by="u-101")
+
+    second_keys = {
+        r[0] for r in h.conn.execute("SELECT idempotency_key FROM executed_actions")
+    }
+    assert len(second_keys) == 8  # the first run's 4 plus a fresh 4, none skipped
+    assert first_keys <= second_keys
+    skipped = [r[0] for r in h.conn.execute("SELECT event FROM audit_log WHERE event = 'action.skipped_idempotent'")]
+    assert skipped == []
+
+    # Two distinct S-Z purchase orders now exist, each created exactly once.
+    assert h.conn.execute(
+        "SELECT COUNT(*) FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()[0] == 2
 
 
 def test_scenario_a_decided_by_the_backup_is_attributed_to_the_backup(make_harness):
@@ -185,6 +254,25 @@ def test_scenario_a_over_limit_routes_approval_to_manager(make_harness):
 
     tick(h.conn, h.clock, llm)
 
-    approval = h.conn.execute("SELECT approver_id, routed_reason FROM approvals").fetchone()
+    approval = h.conn.execute("SELECT approval_id, approver_id, routed_reason FROM approvals").fetchone()
     assert approval["approver_id"] == "u-100"
     assert approval["routed_reason"] is not None
+
+    # F2: runs end to end with no failed step once Marcus (u-100) approves.
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-100")
+
+    instance = h.conn.execute("SELECT status FROM workflow_instances").fetchone()
+    assert instance["status"] == "completed"
+
+    new_po = h.conn.execute(
+        "SELECT qty, unit_price, status FROM erp_purchase_orders WHERE supplier_id = 'S-Z'"
+    ).fetchone()
+    assert new_po["qty"] == 700
+    assert new_po["unit_price"] == 46.50  # ERP's price, never the model's
+    assert new_po["status"] == "open"
+
+    original_po = h.conn.execute(
+        "SELECT qty, status FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()
+    assert original_po["qty"] == 100
+    assert original_po["status"] == "open"

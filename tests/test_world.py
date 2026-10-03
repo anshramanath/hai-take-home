@@ -32,6 +32,8 @@ SCENARIO_A_COUNTS = {
     "notifications": 0,
 }
 
+SCENARIO_A_PROMPT_INJECTION_COUNTS = {**SCENARIO_A_COUNTS, "mail_messages": 6}
+
 SCENARIO_B_COUNTS = {
     **COMMON_COUNTS,
     "erp_parts": 2,
@@ -52,6 +54,7 @@ EXPECTED_COUNTS = {
     "scenario_a_over_limit": SCENARIO_A_COUNTS,
     "scenario_a_backup_low_limit": SCENARIO_A_COUNTS,
     "scenario_a_no_arrival": SCENARIO_A_COUNTS,
+    "scenario_a_prompt_injection": SCENARIO_A_PROMPT_INJECTION_COUNTS,
     "scenario_b_covers": SCENARIO_B_COUNTS,
     "scenario_b_shortage": SCENARIO_B_COUNTS,
 }

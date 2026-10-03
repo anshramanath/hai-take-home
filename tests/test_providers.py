@@ -133,6 +133,22 @@ def test_quality_provider_computes_free_qty_for_shortage_fixture(make_harness):
     assert sum(released.values()) < 100  # short of 4820's 100-unit need
 
 
+def test_quality_provider_never_returns_the_unrelated_lot_tracked_noise_part(make_harness):
+    """T9 (Tier 2): L-3000 is part P-5500, not P-1180; the released-lot
+    query is scoped by the item's own part_id, so L-3000 must never
+    appear regardless of being released stock of a lot-tracked part.
+    """
+
+    h = make_harness("scenario_b_covers")
+    run_detectors(h.conn, h.clock)
+    item = _scenario_b_item(h.conn)
+    omar = get_user(h.conn, "u-202")
+
+    context = gather_context(h.conn, h.clock, omar, item)
+    record_ids = {r for r in context["quality"].record_ids}
+    assert "L-3000" not in record_ids
+
+
 def test_quality_provider_empty_without_lot_read_scope(make_harness):
     from dataclasses import replace
 

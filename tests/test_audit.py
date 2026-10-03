@@ -27,3 +27,45 @@ def test_log_inserts_ordered_rows_with_run_actor_event_detail(make_harness):
 
     assert len(events_for_run(h.conn, "run-2")) == 1
     assert len(all_events(h.conn)) == 3
+
+
+def test_mail_body_text_never_appears_in_audit_detail(make_harness):
+    """T10 (Tier 2): context.gathered logs record_ids per source, never
+    record content (harness/context/registry.py); nothing else in the
+    system touches mail_messages.body at all. Running Scenario A through
+    approval and execution and scanning every audit_log.detail for M-001's
+    literal body text proves the mechanism, not just one call site.
+    """
+
+    from harness.app import approve, tick
+    from harness.execution.workflows.reroute_po import ChooseSupplierResponse, DraftNotificationResponse
+    from harness.planning.llm import FakeLLMClient
+    from harness.planning.models import PlannerOutput, WorkflowRequest
+
+    h = make_harness("scenario_a")
+    mail_body = h.conn.execute(
+        "SELECT body FROM mail_messages WHERE message_id = 'M-001'"
+    ).fetchone()[0]
+    assert mail_body  # sanity: the fixture actually has body text to look for
+
+    llm = FakeLLMClient([
+        PlannerOutput(proposal=WorkflowRequest(
+            kind="workflow", workflow="reroute_po",
+            params={
+                "part_id": "P-4471", "original_po_id": "PO-77812", "prod_order_id": "4812",
+                "qty": 120, "needed_by": "2026-09-07",
+            },
+            reasoning="Supplier Y (PO-77812) slipped per M-001; 4812 starts 9/7.",
+            summary_for_user="Reroute part of PO-77812 to an approved alternate supplier.",
+        )),
+        ChooseSupplierResponse(supplier_id="S-Z", justification="Only approved candidate meeting the need date."),
+        DraftNotificationResponse(body="Heads up: part of your incoming shipment is being rerouted."),
+    ])
+    tick(h.conn, h.clock, llm)
+    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-101")
+
+    all_detail_text = " ".join(
+        row[0] for row in h.conn.execute("SELECT detail FROM audit_log")
+    )
+    assert mail_body not in all_detail_text

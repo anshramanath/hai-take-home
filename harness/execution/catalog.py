@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from harness.execution.args import (
@@ -46,6 +47,25 @@ def _precheck_create_po(db, args: CreatePoArgs) -> None:
 
 
 def _run_create_po(db, args: CreatePoArgs, ctx: ToolContext) -> dict:
+    """`promised_date` is a fact the supplier system hands back when the
+    order is actually placed, not a value approved ahead of time (F3): a
+    plan approved on day N must not freeze a promised date computed as if
+    it had been placed on day N minus however many days escalation took.
+    Computed here, at execution, from execution-time "today" plus the
+    supplier's own lead time, and refused before any write if it would
+    land after `needed_by`, the frozen decision the human did approve.
+    """
+
+    lead_time_days = db.execute(
+        "SELECT lead_time_days FROM erp_suppliers WHERE supplier_id = ?", (args.supplier_id,)
+    ).fetchone()[0]
+    promised_date = (ctx.today + timedelta(days=lead_time_days)).isoformat()
+    if promised_date > args.needed_by:
+        raise PrecheckFailed(
+            f"supplier {args.supplier_id}'s lead time now lands on {promised_date}, "
+            f"after needed_by {args.needed_by}"
+        )
+
     total_value = round(args.qty * args.unit_price, 2)
     db.execute(
         "INSERT INTO erp_purchase_orders (po_id, part_id, supplier_id, qty, unit_price, "
@@ -59,11 +79,11 @@ def _run_create_po(db, args: CreatePoArgs, ctx: ToolContext) -> dict:
             args.unit_price,
             total_value,
             ctx.today.isoformat(),
-            args.promised_date,
+            promised_date,
             args.created_by,
         ),
     )
-    return {"po_id": args.po_id, "total_value": total_value}
+    return {"po_id": args.po_id, "total_value": total_value, "promised_date": promised_date}
 
 
 def _compensation_args_create_po(args: CreatePoArgs, result: dict) -> CancelPoArgs:

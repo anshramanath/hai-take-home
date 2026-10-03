@@ -108,7 +108,7 @@ def handle_attention_item(
     run_id = create_run(conn, clock, item_id=item_row["item_id"], user_id=user.user_id)
 
     context = gather_context(conn, clock, user, item, run_id=run_id)
-    memory_facts = facts_for_prompt(conn, clock)
+    memory_facts = facts_for_prompt(conn, clock, user)
     # Kept for the confirmed-outcome memory fact written on approval
     # (section 13): the mail evidence behind this run's reasoning, and the
     # item's own facts (supplier, dependent PO), are not otherwise
@@ -171,6 +171,7 @@ def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:
     fired_tasks = run_due_tasks(conn, clock)
     escalated = escalate_pending(conn, clock)
     resumed = resume_all(conn, clock, llm_client)
+    resumed_executions = resume_pending_executions(conn, clock, llm_client)
     new_item_ids = run_detectors(conn, clock)
 
     unplanned = conn.execute("SELECT * FROM attention_items WHERE status = 'open'").fetchall()
@@ -183,6 +184,7 @@ def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:
         "fired_tasks": fired_tasks,
         "escalated": escalated,
         "resumed_workflows": resumed,
+        "resumed_executions": resumed_executions,
         "new_items": new_item_ids,
         "runs": run_ids,
     }
@@ -207,12 +209,18 @@ def _write_completion_fact(conn: sqlite3.Connection, clock: Clock, run_id: str) 
         conn, clock, subject=supplier_id,
         fact=f"{supplier_id} was rerouted away from {inbound_po_id} after a confirmed delay.",
         source_ids=mail_ids or [inbound_po_id],
+        visible_to_scope="erp:po:read",
     )
 
 
-def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, approval_id: str, decided_by: str) -> None:
-    decide(conn, clock, approval_id=approval_id, decided_by=decided_by, decision="approved")
-    approval = get_approval(conn, approval_id)
+def _execute_approved(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, approval: sqlite3.Row) -> None:
+    """Runs an already-approved plan to completion, workflow or free-form.
+    Split out of `approve()` so `resume_pending_executions` (F5) can reach
+    the exact same path for an approval a killed process never got to
+    execute: `decide()` recording 'approved' and this running are two
+    separate commits, so a crash in between must not strand the instance.
+    """
+
     plan = json.loads(approval["plan_json"])
     if plan.get("workflow"):
         instance_row = conn.execute(
@@ -229,9 +237,35 @@ def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, ap
         # requester_id directly; the run it belongs to does.
         requester_id = get_run(conn, approval["run_id"])["user_id"]
         final_status = run_approved_plan(
-            conn, clock, approval_id, requester_id=requester_id, run_id=approval["run_id"],
+            conn, clock, approval["approval_id"], requester_id=requester_id, run_id=approval["run_id"],
         )
         set_run_status(conn, approval["run_id"], final_status)
+
+
+def resume_pending_executions(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> list[str]:
+    """F5: picks up approvals already decided 'approved' whose run never
+    reached a terminal status, i.e. a process killed between `decide()`
+    and execution. Both `execute()` and `run_approved_plan()` are
+    idempotent, so re-running an approval that did partially execute
+    before the crash just skips the steps already recorded in
+    `executed_actions` rather than duplicating them.
+    """
+
+    rows = conn.execute(
+        "SELECT a.* FROM approvals a JOIN runs r ON r.run_id = a.run_id "
+        "WHERE a.status = 'approved' AND r.status = 'awaiting_approval'"
+    ).fetchall()
+    resumed = []
+    for approval in rows:
+        _execute_approved(conn, clock, llm_client, approval)
+        resumed.append(approval["approval_id"])
+    return resumed
+
+
+def approve(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient, *, approval_id: str, decided_by: str) -> None:
+    decide(conn, clock, approval_id=approval_id, decided_by=decided_by, decision="approved")
+    approval = get_approval(conn, approval_id)
+    _execute_approved(conn, clock, llm_client, approval)
 
 
 def reject(conn: sqlite3.Connection, clock: Clock, *, approval_id: str, decided_by: str) -> None:

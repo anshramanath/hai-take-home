@@ -95,7 +95,7 @@ def test_create_po_precheck_rejects_unapproved_supplier(make_harness):
     tool = get_tool("create_po")
     args = CreatePoArgs(
         po_id="PO-TEST", part_id="P-4471", supplier_id="S-Q", qty=100, unit_price=39.0,
-        promised_date="2026-09-05", created_by="u-101",
+        needed_by="2026-09-05", created_by="u-101",
     )
     with pytest.raises(PrecheckFailed):
         execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-101")
@@ -109,7 +109,7 @@ def test_create_po_precheck_rejects_nonexistent_supplier(make_harness):
     tool = get_tool("create_po")
     args = CreatePoArgs(
         po_id="PO-TEST", part_id="P-4471", supplier_id="S-NOPE", qty=10, unit_price=10.0,
-        promised_date="2026-09-05", created_by="u-101",
+        needed_by="2026-09-05", created_by="u-101",
     )
     with pytest.raises(PrecheckFailed):
         execute(h.conn, h.clock, tool, args, ctx(), run_id="run-1", actor="test", requester_id="u-101")
@@ -270,7 +270,7 @@ def test_cancel_po_compensates_create_po(make_harness):
     tool = get_tool("create_po")
     args = CreatePoArgs(
         po_id="PO-TEST", part_id="P-4471", supplier_id="S-Z", qty=150, unit_price=46.50,
-        promised_date="2026-09-04", created_by="u-101",
+        needed_by="2026-09-04", created_by="u-101",
     )
     c = ctx(step="create")
     result = execute(h.conn, h.clock, tool, args, c, run_id="run-1", actor="test", requester_id="u-101")

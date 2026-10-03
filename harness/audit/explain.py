@@ -29,7 +29,7 @@ def _render(event: str, detail: dict, actor: str) -> str:
     if event == "gate.blocked":
         return f"gate: blocked - {detail.get('reason')}"
     if event == "approval.requested":
-        return f"approval requested: {detail.get('approval_id')} -> {detail.get('approver_id')}"
+        return f"approval requested: {detail.get('approval_id')}, approver {detail.get('approver_id')}"
     if event == "approval.escalated":
         return f"escalation: {detail.get('reason')}"
     if event == "approval.decided":

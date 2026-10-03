@@ -129,16 +129,22 @@ def decide(
     conn.commit()
 
 
-def _is_out_of_office(conn: sqlite3.Connection, user_id: str, day: date) -> bool:
+def _out_of_office_event(conn: sqlite3.Connection, user_id: str, day: date) -> str | None:
+    """The matching OOO event's id, or None. Returning the id rather than
+    a bare bool is what lets `escalate_pending` audit its actual evidence
+    (the calendar event that triggered the reassignment), not just the
+    conclusion it drew from it.
+    """
+
     rows = conn.execute(
-        "SELECT start, end FROM cal_events WHERE owner = ? AND out_of_office = 1", (user_id,)
+        "SELECT event_id, start, end FROM cal_events WHERE owner = ? AND out_of_office = 1", (user_id,)
     ).fetchall()
-    for start, end in rows:
+    for event_id, start, end in rows:
         start_date = date.fromisoformat(start[:10])
         end_date = date.fromisoformat(end[:10])
         if start_date <= day <= end_date:
-            return True
-    return False
+            return event_id
+    return None
 
 
 def escalate_pending(conn: sqlite3.Connection, clock: Clock) -> list[str]:
@@ -157,7 +163,8 @@ def escalate_pending(conn: sqlite3.Connection, clock: Clock) -> list[str]:
     ).fetchall()
 
     for approval_id, run_id, approver_id, plan_json in rows:
-        if not _is_out_of_office(conn, approver_id, tomorrow):
+        ooo_event_id = _out_of_office_event(conn, approver_id, tomorrow)
+        if ooo_event_id is None:
             continue
 
         approver = get_user(conn, approver_id)
@@ -188,6 +195,7 @@ def escalate_pending(conn: sqlite3.Connection, clock: Clock) -> list[str]:
                 "from": approver_id,
                 "to": new_approver.user_id,
                 "reason": reason,
+                "ooo_event_id": ooo_event_id,
             },
         )
         conn.commit()

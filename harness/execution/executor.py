@@ -154,10 +154,23 @@ def compensate(
     # compensation's idempotency key would collide with the forward
     # action's and execute() would treat it as already done.
     comp_ctx = ToolContext(run_id=ctx.run_id, step=f"{ctx.step}:compensate", today=ctx.today)
+    idempotency_key = comp_tool.idempotency_key(comp_args, comp_ctx)
+    already_compensated = conn.execute(
+        "SELECT 1 FROM executed_actions WHERE idempotency_key = ?", (idempotency_key,)
+    ).fetchone() is not None
+
     result = execute(
         conn, clock, comp_tool, comp_args, comp_ctx,
         run_id=run_id, actor=actor, requester_id=requester_id, skip_precheck=True,
     )
+    if already_compensated:
+        # A retried compensation loop (e.g. resumed after a crash
+        # mid-compensation) replays this entry; execute()'s own
+        # idempotency check already logged action.skipped_idempotent for
+        # it. Logging action.compensated again here would claim a second
+        # reversal happened when the underlying write did not.
+        return result
+
     audit_log(
         conn, clock, run_id=run_id, actor=actor, event="action.compensated",
         detail={"original_tool": tool.name, "compensation_tool": comp_tool.name, "result": result},

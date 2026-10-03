@@ -28,11 +28,14 @@ from harness.execution.engine import (
     StepContext,
     StepHalted,
     WorkflowDefinition,
+    approved_args,
     register,
     run_approved_action,
 )
 from harness.planning.models import ToolCall
 from harness.scheduling.clock import Clock
+
+PROMISED_DATE_PLACEHOLDER = "{PROMISED_DATE}"
 
 
 class RerouteParams(BaseModel):
@@ -67,7 +70,56 @@ class DraftNotificationResponse(BaseModel):
 # Steps 1-2: checks (no LLM)
 
 
+def _validate_params(ctx: StepContext) -> None:
+    """Section 11 invariant 5: the gate (here, step 1 itself) enforces this
+    in code, not just in the workflow's description text. A real model
+    once proposed this workflow for a quality-hold item with a production
+    order id standing in for original_po_id; prompt wording alone cannot
+    be trusted to prevent a repeat.
+    """
+
+    state = ctx.state
+    part_id = state["part_id"]
+    original_po_id = state["original_po_id"]
+    prod_order_id = state["prod_order_id"]
+    qty = state["qty"]
+
+    po_row = ctx.conn.execute(
+        "SELECT part_id, status, qty FROM erp_purchase_orders WHERE po_id = ?", (original_po_id,)
+    ).fetchone()
+    if po_row is None:
+        raise StepHalted("halted_invalid_params", f"original_po_id {original_po_id!r} does not exist")
+    po_part_id, po_status, po_qty = po_row
+    if po_status != "open":
+        raise StepHalted(
+            "halted_invalid_params", f"original PO {original_po_id} is not open (status={po_status})"
+        )
+    if po_part_id != part_id:
+        raise StepHalted(
+            "halted_invalid_params",
+            f"original PO {original_po_id} is for part {po_part_id}, not {part_id}",
+        )
+    if qty > po_qty:
+        raise StepHalted(
+            "halted_invalid_params",
+            f"qty {qty} exceeds original PO {original_po_id}'s open quantity {po_qty}",
+        )
+
+    prod_row = ctx.conn.execute(
+        "SELECT components FROM erp_production_orders WHERE prod_order_id = ?", (prod_order_id,)
+    ).fetchone()
+    if prod_row is None:
+        raise StepHalted("halted_invalid_params", f"prod_order_id {prod_order_id!r} does not exist")
+    components = {component["part_id"] for component in json.loads(prod_row[0])}
+    if part_id not in components:
+        raise StepHalted(
+            "halted_invalid_params",
+            f"production order {prod_order_id} does not consume part {part_id}",
+        )
+
+
 def _confirm_supplier_approved(ctx: StepContext) -> dict[str, Any]:
+    _validate_params(ctx)
     part_id = ctx.state["part_id"]
     rows = ctx.conn.execute(
         "SELECT supplier_id, approved, approved_parts FROM erp_suppliers"
@@ -172,7 +224,16 @@ def _draft_notification(ctx: StepContext) -> dict[str, Any]:
 
 
 def _create_po_step(ctx: StepContext) -> dict[str, Any]:
-    return run_approved_action(ctx, "create_po", "create_po")
+    """create_po's own result carries the real promised_date (F3: a fact
+    the supplier system hands back at order-placement time, computed from
+    execution-time "today", not something frozen into the plan at
+    approval). Surfaced into state so the later steps, which only know the
+    placeholder, can substitute the real value in.
+    """
+
+    updates = run_approved_action(ctx, "create_po", "create_po")
+    updates["new_promised_date"] = updates["_compensation_log"][-1]["result"]["promised_date"]
+    return updates
 
 
 def _reduce_original_po_step(ctx: StepContext) -> dict[str, Any]:
@@ -180,32 +241,37 @@ def _reduce_original_po_step(ctx: StepContext) -> dict[str, Any]:
 
 
 def _notify_production_step(ctx: StepContext) -> dict[str, Any]:
-    return run_approved_action(ctx, "notify_user", "notify_production")
+    body = approved_args(ctx.state, "notify_user")["body"].replace(
+        PROMISED_DATE_PLACEHOLDER, ctx.state["new_promised_date"]
+    )
+    return run_approved_action(ctx, "notify_user", "notify_production", overrides={"body": body})
 
 
 def _schedule_arrival_check_step(ctx: StepContext) -> dict[str, Any]:
-    return run_approved_action(ctx, "schedule_check", "schedule_arrival_check")
+    return run_approved_action(
+        ctx, "schedule_check", "schedule_arrival_check",
+        overrides={"run_at": ctx.state["new_promised_date"]},
+    )
 
 
 # ---------------------------------------------------------------------------
 # Building the plan to approve: the one place steps 5-8's args are computed
 
 
-def _compute_create_po_args(conn: sqlite3.Connection, clock: Clock, state: dict[str, Any]) -> CreatePoArgs:
+def _compute_create_po_args(conn: sqlite3.Connection, state: dict[str, Any]) -> CreatePoArgs:
     supplier_id = state["chosen_supplier"]
     part_id = state["part_id"]
-    pricing_json, lead_time_days = conn.execute(
-        "SELECT pricing, lead_time_days FROM erp_suppliers WHERE supplier_id = ?", (supplier_id,)
-    ).fetchone()
+    pricing_json = conn.execute(
+        "SELECT pricing FROM erp_suppliers WHERE supplier_id = ?", (supplier_id,)
+    ).fetchone()[0]
     unit_price = json.loads(pricing_json)[part_id]
-    promised_date = (clock.today() + timedelta(days=lead_time_days)).isoformat()
     return CreatePoArgs(
         po_id=f"PO-{uuid.uuid4().hex[:8].upper()}",
         part_id=part_id,
         supplier_id=supplier_id,
         qty=state["qty"],
         unit_price=unit_price,
-        promised_date=promised_date,
+        needed_by=state["needed_by"],
         created_by=state["_requester_id"],
     )
 
@@ -229,7 +295,7 @@ def _compute_notify_args(
     body = (
         f"{state['notification_draft']}\n\n"
         f"Part {state['part_id']}: replacement PO {create_args.po_id} placed with "
-        f"{create_args.supplier_id}, expected {create_args.promised_date}. "
+        f"{create_args.supplier_id}, expected {PROMISED_DATE_PLACEHOLDER}. "
         f"Original PO {state['original_po_id']} has been reduced accordingly."
     )
     return NotificationArgs(to_user=supervisor_id, from_user=state["_requester_id"], subject=subject, body=body)
@@ -240,14 +306,14 @@ def _compute_schedule_check_args(
 ) -> ScheduleCheckArgs:
     payload = {"po_id": create_args.po_id, "part_id": state["part_id"], "prod_order_id": state["prod_order_id"]}
     return ScheduleCheckArgs(
-        run_at=create_args.promised_date, kind="arrival_check", payload=payload, created_by_run=run_id
+        run_at=PROMISED_DATE_PLACEHOLDER, kind="arrival_check", payload=payload, created_by_run=run_id
     )
 
 
 def build_plan_steps(
     conn: sqlite3.Connection, clock: Clock, state: dict[str, Any], run_id: str
 ) -> list[ToolCall]:
-    create_args = _compute_create_po_args(conn, clock, state)
+    create_args = _compute_create_po_args(conn, state)
     reduce_args = _compute_reduce_po_args(conn, state)
     notify_args = _compute_notify_args(conn, state, create_args)
     schedule_args = _compute_schedule_check_args(state, create_args, run_id)

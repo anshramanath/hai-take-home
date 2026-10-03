@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from harness.planning.models import ToolCall
@@ -13,6 +15,7 @@ from harness.policy.approvals import (
     decide,
     escalate_pending,
     get_approval,
+    plan_hash,
     verify_plan_hash,
 )
 from harness.world.users import get_user
@@ -28,7 +31,7 @@ def _reroute_steps(qty: int = 150, unit_price: float = 46.50) -> list[ToolCall]:
                 "supplier_id": "S-Z",
                 "qty": qty,
                 "unit_price": unit_price,
-                "promised_date": "2026-09-04",
+                "needed_by": "2026-09-04",
                 "created_by": "u-101",
             },
         )
@@ -47,6 +50,56 @@ def test_approval_stores_canonical_plan_json_and_matching_hash(make_harness):
 
     events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
     assert "approval.requested" in events
+
+
+def test_hash_is_identical_regardless_of_dict_key_order_or_numeric_literal_form(make_harness):
+    """T3 (Tier 2): `json.dumps(..., sort_keys=True)` is what makes the
+    hash a function of the plan's actual content, not of the order some
+    code happened to build the dict in, or which literal (46.5 vs 46.50)
+    produced the same float.
+    """
+
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    steps_a = [ToolCall(tool="create_po", args={
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z",
+        "qty": 150, "unit_price": 46.5, "needed_by": "2026-09-04", "created_by": "u-101",
+    })]
+    steps_b = [ToolCall(tool="create_po", args={
+        "created_by": "u-101", "needed_by": "2026-09-04", "unit_price": 46.50,
+        "supplier_id": "S-Z", "qty": 150, "part_id": "P-4471", "po_id": "PO-TEST",
+    })]
+
+    approval_a = create_approval(
+        h.conn, h.clock, run_id="run-a", requester=dana, steps=steps_a,
+        approver_id="u-101", routed_reason=None, workflow="workflow:reroute_po",
+    )
+    approval_b = create_approval(
+        h.conn, h.clock, run_id="run-b", requester=dana, steps=steps_b,
+        approver_id="u-101", routed_reason=None, workflow="workflow:reroute_po",
+    )
+
+    row_a, row_b = get_approval(h.conn, approval_a), get_approval(h.conn, approval_b)
+    assert row_a["plan_json"] == row_b["plan_json"]
+    assert row_a["plan_hash"] == row_b["plan_hash"]
+
+
+def test_hash_survives_a_json_and_db_round_trip(make_harness):
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    approval_id = create_approval(
+        h.conn, h.clock, run_id="run-1", requester=dana, steps=_reroute_steps(),
+        approver_id="u-101", routed_reason=None, workflow="workflow:reroute_po",
+    )
+    stored = get_approval(h.conn, approval_id)
+
+    # Simulate exactly what resume_after_approval does: pull plan_json
+    # back out of the DB as plain TEXT, parse it, and recompute the hash
+    # from scratch instead of trusting the stored one.
+    round_tripped = json.loads(stored["plan_json"])
+    recomputed_json = json.dumps(round_tripped, sort_keys=True, separators=(",", ":"))
+    assert recomputed_json == stored["plan_json"]
+    assert plan_hash(recomputed_json) == stored["plan_hash"]
 
 
 def test_tampering_with_plan_json_breaks_the_hash(make_harness):
@@ -129,6 +182,29 @@ def test_escalation_reassigns_to_backup_when_approver_is_ooo_tomorrow(make_harne
 
     events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
     assert "approval.escalated" in events
+
+
+def test_escalation_audit_detail_includes_the_calendar_event_id(make_harness):
+    """T2 (Tier 2): the escalation reason is prose; the actual evidence
+    for it is a specific calendar row. explain and anyone auditing later
+    should be able to point at E-002 itself, not just a sentence claiming
+    it exists.
+    """
+
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    approval_id = create_approval(
+        h.conn, h.clock, run_id="run-1", requester=dana, steps=_reroute_steps(),
+        approver_id="u-101", routed_reason=None, workflow="workflow:reroute_po",
+    )
+    escalate_pending(h.conn, h.clock)
+
+    detail = json.loads(
+        h.conn.execute(
+            "SELECT detail FROM audit_log WHERE event = 'approval.escalated' AND run_id = 'run-1'"
+        ).fetchone()[0]
+    )
+    assert detail["ooo_event_id"] == "E-002"
 
 
 def test_no_escalation_when_approver_is_not_ooo_tomorrow(make_harness):

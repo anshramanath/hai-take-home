@@ -311,6 +311,25 @@ def test_unknown_definition_raises():
         get_definition("reroute_po", 99)
 
 
+def test_latest_version_raises_for_an_unregistered_name():
+    from harness.execution.engine import latest_version
+
+    with pytest.raises(UnknownWorkflowDefinition):
+        latest_version("no_such_workflow")
+
+
+def test_set_instance_status_is_visible_immediately(make_harness):
+    from harness.execution.engine import set_instance_status
+
+    h = make_harness("scenario_a")
+    row, _, _ = _enter_and_approve(h)
+    set_instance_status(h.conn, row["instance_id"], "rejected")
+    updated = h.conn.execute(
+        "SELECT status FROM workflow_instances WHERE instance_id = ?", (row["instance_id"],)
+    ).fetchone()
+    assert updated["status"] == "rejected"
+
+
 # ---------------------------------------------------------------------------
 # Instance and approval edge cases
 

@@ -404,6 +404,15 @@ _TOOLS: list[Tool] = [
 
 TOOLS: dict[str, Tool] = {tool.name: tool for tool in _TOOLS}
 
+# The tools that write to erp_* tables. Section 8: detectors run on every
+# tick and also right after a tool writes to an ERP table; the executor
+# checks membership here to decide whether to re-run them. Tools outside
+# this set only touch harness bookkeeping (notifications, scheduled_tasks,
+# attention_items), which no detector reads.
+ERP_WRITING_TOOLS: frozenset[str] = frozenset({
+    "create_po", "cancel_po", "reduce_po", "restore_po", "reallocate_lot",
+})
+
 
 def get_tool(name: str) -> Tool:
     try:

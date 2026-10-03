@@ -102,6 +102,7 @@ class Step:
 class WorkflowDefinition:
     name: str
     version: int
+    description: str
     params_model: type
     steps: tuple[Step, ...]
     build_plan_steps: Callable[[sqlite3.Connection, Clock, dict[str, Any], str], list[ToolCall]]
@@ -119,6 +120,39 @@ def get_definition(name: str, version: int) -> WorkflowDefinition:
         return _REGISTRY[(name, version)]
     except KeyError:
         raise UnknownWorkflowDefinition(f"{name} v{version}") from None
+
+
+def latest_version(name: str) -> int:
+    versions = [version for (registered_name, version) in _REGISTRY if registered_name == name]
+    if not versions:
+        raise UnknownWorkflowDefinition(name)
+    return max(versions)
+
+
+def registered_workflow_names() -> list[str]:
+    """Every distinct workflow name with at least one registered version,
+    sorted for a stable prompt."""
+
+    return sorted({name for (name, _version) in _REGISTRY})
+
+
+def workflow_catalog_for_prompt() -> list[dict[str, Any]]:
+    """What the planner shows the model for each registered workflow (at
+    its latest version): name, description, and the exact params schema it
+    must supply — built from the registry at runtime, never hardcoded
+    (section 7). A bare name is not enough for the model to know when a
+    workflow applies or what parameters it takes.
+    """
+
+    catalog = []
+    for name in registered_workflow_names():
+        definition = get_definition(name, latest_version(name))
+        catalog.append({
+            "name": definition.name,
+            "description": definition.description,
+            "params_schema": definition.params_model.model_json_schema(),
+        })
+    return catalog
 
 
 def approved_args(state: dict[str, Any], tool_name: str) -> dict[str, Any]:
@@ -168,6 +202,16 @@ def _persist(conn: sqlite3.Connection, instance_id: str, current_step: int, stat
 
 def _set_status(conn: sqlite3.Connection, instance_id: str, status: str) -> None:
     conn.execute("UPDATE workflow_instances SET status = ? WHERE instance_id = ?", (status, instance_id))
+
+
+def set_instance_status(conn: sqlite3.Connection, instance_id: str, status: str) -> None:
+    """Public wrapper so a caller outside this module (the orchestrator,
+    marking an instance `rejected`) can force a terminal status without
+    reaching into a private helper.
+    """
+
+    _set_status(conn, instance_id, status)
+    conn.commit()
 
 
 def start(

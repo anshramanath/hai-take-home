@@ -14,9 +14,9 @@ with.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolCall(BaseModel):
@@ -33,7 +33,7 @@ class ToolPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["plan"] = "plan"
+    kind: Literal["plan"]
     steps: list[ToolCall]
     reasoning: str
     summary_for_user: str
@@ -47,7 +47,7 @@ class WorkflowRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["workflow"] = "workflow"
+    kind: Literal["workflow"]
     workflow: str
     params: dict[str, Any]
     reasoning: str
@@ -59,8 +59,19 @@ class NoAction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["none"] = "none"
+    kind: Literal["none"]
     reasoning: str
 
 
 Proposal = ToolPlan | WorkflowRequest | NoAction
+
+
+class PlannerOutput(BaseModel):
+    """The one schema actually sent as the LLM's response_format: a
+    discriminated union over the three proposal kinds, keyed on each
+    variant's `kind` literal, so the model must commit to exactly one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: Annotated[ToolPlan | WorkflowRequest | NoAction, Field(discriminator="kind")]

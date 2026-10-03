@@ -6,3 +6,4 @@ htmlcov/
 .venv/
 *.db
 .python-version
+.env

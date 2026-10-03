@@ -185,6 +185,105 @@ at the end of this file.
 
 ---
 
+## Phase 4: detection, context, planner, Scenario A end to end
+
+### What was built
+
+- `harness/detection/`: `StockoutDetector` (section 8) — projects each production order's
+  component balance day by day from today to the order's start, subtracting background
+  usage, adding inbound POs landing in the window, subtracting other orders' competing
+  demand on the same day. Raises `short` (projected balance below requirement) or
+  `thin_margin` (covered only because of a PO landing within `MARGIN_DAYS` of the start).
+  `detection/registry.py` runs every registered detector and treats a UNIQUE violation on
+  `dedupe_key` as "already known."
+- `harness/context/`: `ErpProvider`, `MailProvider`, `CalendarProvider` (section 9), each
+  scope-gating before it filters for relevance, plus `context/registry.py` which gathers
+  every provider's slice and audits exactly which record ids were returned per source.
+- `harness/planning/prompt.py` and `planner.py`: builds the prompt from the attention item,
+  gathered context, memory hints (empty until phase 5), and catalogs built live from the
+  tool and workflow registries; `propose()` does the one-retry-then-fail dance section 10
+  describes.
+- `harness/planning/llm.py` extended with `LLMOutputInvalid`, `OpenAIClient`, and
+  `ReplayClient`.
+- `harness/memory/runs.py`: run bookkeeping (`runs.state`, status transitions) — the "what
+  the current run knows" half of memory; persistent `memory_facts` is phase 5.
+- `harness/app.py`: `handle_attention_item` (item -> context -> proposal -> gate/workflow
+  entry), `tick`, `approve`, `reject`, and `default_llm_client` (OpenAIClient if
+  `OPENAI_API_KEY` is set, else `ReplayClient` against a recorded fixture, else a clear
+  error). `__main__.py` gained `tick`, `approve`, `reject` CLI commands.
+- The executor now re-runs detectors immediately after any tool in
+  `execution.catalog.ERP_WRITING_TOOLS` writes (section 8's "also after any tool writes to
+  an ERP table"), not just on tick.
+
+### Reasoning
+
+- **`tick()` runs every "today"-scoped step and advances the clock last, not first.**
+  Section 13 lists "advance clock" as tick's first action, but `escalate_pending` (built
+  and tested in phase 2) reads as "unanswered at end of the day that's ending, check if the
+  approver is out tomorrow" — a check meant to run while `today` is still that day, not
+  after it has already turned into tomorrow. Advancing first would mean the very first
+  tick after seeding processes tomorrow's date instead of today's (breaking the demo's
+  "tick on 9/2; detection..." narrative), and would shift the OOO check by one day from
+  what phase 2 already tested. Advancing last makes one call to `tick()` equal to "process
+  today fully, then turn the page," which is both demo-narrative-correct and leaves
+  `escalate_pending` untouched.
+- **Workflow names are constrained in the schema itself, not just described in prompt
+  text — and this was discovered empirically, not reasoned out in advance.** Early in this
+  phase I treated "the Literal of workflow names... built from the registries at runtime"
+  (section 7) as being about prompt *content* (an `available_workflows` list) rather than
+  a schema-level constraint, since `WorkflowRequest.workflow` was a plain `str`. Testing
+  against the real OpenAI API immediately exposed why that's not enough: gpt-4o-mini,
+  given only a prose list of valid workflow names, twice invented workflow names
+  (`FollowUpWithSupplier`, `follow_up_with_supplier`) that were never in the catalog. The
+  fix was to rebuild the planner's output schema per call via `pydantic.create_model`,
+  narrowing `WorkflowRequest.workflow` to `Literal[*registered_names]` — built from
+  `harness.execution.engine`'s registry at call time, subclassed from the real
+  `WorkflowRequest` so `isinstance` checks elsewhere still hold. `FakeLLMClient` had to
+  change too: it now re-validates a scripted response against whatever model is actually
+  requested instead of checking `isinstance`, since tests can't import a model that's
+  constructed fresh on every call.
+- **`OpenAIClient` builds its own request with `"strict": false` instead of using the SDK's
+  `.parse()` convenience wrapper** — also found by testing against the real API, not
+  anticipated. OpenAI's strict structured-output mode requires every object in the schema,
+  including nested ones, to declare a closed set of properties. `ToolCall.args` and
+  `WorkflowRequest.params` are genuinely open dicts (different tools and workflows take
+  different arguments), which strict mode rejects outright (`400: 'additionalProperties'
+  is required to be supplied and to be false`). Non-strict mode accepts the schema as-is;
+  Pydantic's own `extra="forbid"` validation on the parsed response is what actually
+  guarantees closed objects where they should be closed, so nothing is given up by not
+  using strict mode at the API layer.
+- **Two real bugs surfaced by the same real-API pass, both about import-order coupling.**
+  First: `app.py` never imported `harness.execution.workflows`, so nothing guaranteed
+  `reroute_po` was actually registered before `tick()` ran — the planner's workflow-name
+  enum would silently fall back to unconstrained in that case. Fixed by importing the
+  workflows package (for its registration side effect) directly in `app.py`. Second: the
+  same gap existed for tests — `test_planner.py` passed when run after
+  `test_workflow_engine.py` (which happens to import the workflows package) but failed in
+  isolation. Fixed by moving that import into `tests/conftest.py`, which every test file
+  loads regardless of run order. Both fixes are the same lesson: a registration side effect
+  from importing a submodule is not something any one caller should be trusted to trigger
+  by accident; the shared entry point (`app.py` for the app, `conftest.py` for tests) has
+  to own it explicitly.
+- **`WorkflowRequest.kind`, `ToolPlan.kind`, and `NoAction.kind` lost their default
+  values** (`Literal["workflow"] = "workflow"` became `Literal["workflow"]`), also from
+  real-API testing: with a default, pydantic's JSON schema omits `kind` from `required`,
+  and a real model (observing the `$defs` title "NoAction" more than the buried `const:
+  "none"`) returned `{"kind": "NoAction", ...}` — the class name, not the literal value.
+  Making every `kind` field required forces the model to treat it as a real enum choice.
+  No existing code was affected: every construction site already passed `kind=` explicitly.
+- **Real-API validation was done by hand this phase, not automated** — section 15's rule
+  that tests never touch the network stands; `FakeLLMClient`/`ReplayClient` cover every
+  automated test. But a `.env`-loaded key was used, outside pytest, to run the actual
+  planner and the actual workflow against gpt-4o-mini end to end (prompt -> workflow
+  selection -> candidate filtering -> bounded supplier choice -> bounded notification draft
+  -> approval -> execution), and separately through the real CLI (`tick` / `approve`). Both
+  of the bugs above were found this way; neither would have been caught by scripted fakes
+  alone, since a fake, by construction, never says something the schema didn't ask for.
+  The actual recorded transcript and replay fixture capture are still deferred to phase 8,
+  once Scenario B and the Tuesday follow-up exist to be part of one coherent run.
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're
@@ -204,3 +303,15 @@ silently:
 5. **Action steps inside a workflow read their args from the approved plan, never
    recompute them** (phase 3) — makes the approval hash check load-bearing rather than
    cosmetic.
+6. **`tick()` advances the clock last, not first**, contrary to section 13's literal
+   ordering (phase 4) — keeps `escalate_pending`'s already-tested "OOO tomorrow" semantics
+   correct and matches the demo narrative's "tick on 9/2; detection..." framing.
+7. **The planner's output schema narrows `WorkflowRequest.workflow` to a `Literal` of
+   currently-registered names, rebuilt per call**, rather than relying on prompt text alone
+   (phase 4) — a real model otherwise invents workflow names outside the catalog.
+8. **`OpenAIClient` requests structured output with `"strict": false`**, built by hand
+   rather than via the SDK's `.parse()` helper (phase 4) — strict mode cannot represent
+   `ToolCall.args` / `WorkflowRequest.params`'s intentionally open dicts.
+9. **`ToolPlan.kind`, `WorkflowRequest.kind`, `NoAction.kind` are required fields with no
+   default** (changed from phase 2's `= "plan"` etc.) (phase 4) — an optional discriminator
+   field let a real model substitute the class name for the literal value.

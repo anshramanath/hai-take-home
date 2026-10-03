@@ -262,6 +262,15 @@ def build_plan_steps(
 REROUTE_PO_V1 = WorkflowDefinition(
     name="reroute_po",
     version=1,
+    description=(
+        "Use when a part's current supplier shipment is delayed or at risk and a "
+        "production order depends on it arriving in time. Reroutes the at-risk quantity "
+        "to an approved alternate supplier: confirms the alternate is approved and can "
+        "meet the need date, creates a replacement PO, reduces the original PO by the "
+        "rerouted quantity, notifies production, and schedules a check that the "
+        "replacement actually arrives. Do not propose this for a part that is not "
+        "genuinely at risk, or when no production order depends on the delayed PO."
+    ),
     params_model=RerouteParams,
     steps=(
         Step(name="confirm_supplier_approved", kind="check", fn=_confirm_supplier_approved),

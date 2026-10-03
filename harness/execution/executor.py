@@ -16,7 +16,8 @@ import sqlite3
 from typing import Any
 
 from harness.audit.log import log as audit_log
-from harness.execution.catalog import get_tool
+from harness.detection.registry import run_detectors
+from harness.execution.catalog import ERP_WRITING_TOOLS, get_tool
 from harness.execution.tools import PrecheckFailed, Tool, ToolContext
 from harness.scheduling.clock import Clock
 from harness.world.users import get_user, missing_scopes
@@ -121,6 +122,14 @@ def execute(
         },
     )
     conn.commit()
+
+    if tool.name in ERP_WRITING_TOOLS:
+        # Section 8: detectors run on every tick and also right after a
+        # tool writes to an ERP table, so a new risk introduced by this
+        # very write (or one it just resolved) is caught immediately
+        # rather than waiting for the next tick.
+        run_detectors(conn, clock)
+
     return result
 
 

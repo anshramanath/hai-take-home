@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from harness.execution import workflows as _workflows  # noqa: F401  (registers every workflow definition)
 from harness.scheduling.clock import Clock
 from harness.world.seed import seed
 

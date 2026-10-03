@@ -65,11 +65,16 @@ uv run pytest --cov=harness --cov-report=term-missing
 ```
 
 No network calls anywhere in the suite (`FakeLLMClient` and `ReplayClient` only).
-`policy/`, `execution/`, `detection/`, `scheduling/`, and `audit/` are all at **100%** line
-coverage. The two remaining gaps are documented and intentional: `world/seed.py` (two
-unreachable defensive guards on fixture names) and `planning/llm.py` (`OpenAIClient`'s
-real-network branches, which the "no network in tests" rule forbids exercising through
-pytest, validated by hand against the real API instead, repeatedly, across development).
+`policy/`, `execution/`, `detection/`, `scheduling/`, and `audit/` (the five packages the
+assignment targets for coverage) are all at **100%** line coverage. Two gaps elsewhere are
+specifically documented and intentional, since they'd otherwise look like missed cases:
+`world/seed.py` (two unreachable defensive guards on fixture names) and `planning/llm.py`
+(`OpenAIClient`'s real-network branches, which the "no network in tests" rule forbids
+exercising through pytest, validated by hand against the real API instead, repeatedly,
+across development). The CLI and orchestration layer (`app.py`, `demo.py`, `__main__.py`)
+isn't held to the same bar: it's thin glue over already-tested functions with no dedicated
+CLI-level tests, exercised by hand through the actual `demo` command and individual CLI
+commands instead.
 
 ## Architecture
 
@@ -82,9 +87,10 @@ One loop, seven replaceable stages, with one more that every single stage writes
 ```
 
 `tick()` (`harness/app.py`) is the heartbeat: it runs due scheduled tasks, escalates
-overdue approvals, resumes any workflow a crash left mid-flight, runs every detector, and
-plans for whatever's still unplanned, all scoped to "today", then advances the clock last.
-See **Notes** below for why last, not first.
+overdue approvals, resumes any workflow a crash left mid-flight, resumes any approval a
+crash left decided but never executed, runs every detector, and plans for whatever's
+still unplanned, all scoped to "today", then advances the clock last. See **Notes** below
+for why last, not first.
 
 Three layers:
 
@@ -95,7 +101,8 @@ Three layers:
   `prompt.py` (the free-form reasoner), `policy/gate.py` and `approvals.py` (permissions,
   thresholds, escalation, the frozen plan), `execution/executor.py` and `engine.py` and
   `runner.py` (the one place tools actually run, the declared-workflow engine, the
-  free-form plan runner), `audit/` (the append-only log and its renderer).
+  free-form plan runner), `audit/` (the append-only log and its renderer), `memory/` (run
+  state and persistent facts).
 - **SQLite**: one file, one schema (`harness/world/schema.sql`), holding both the fake
   company and the harness's own state (approvals, workflow instances, scheduled tasks,
   memory facts, the audit log).

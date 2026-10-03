@@ -145,8 +145,7 @@ The provider and tool interfaces don't need to change shape to point at real sys
 `CalendarProvider` become Microsoft Graph calls, and a document-store-backed provider for
 internal knowledge (specs, supplier contracts) slots in the same way `QualityProvider` did
 for Scenario B, same `fetch(ctx, user, item) -> ContextSlice` shape. What changes is
-pagination, rate limits,
-and staleness; prechecks already re-read live data at execution time (supplier approval,
+pagination, rate limits, and staleness; prechecks already re-read live data at execution time (supplier approval,
 lot status and free quantity, lead time against `needed_by`), so freshness against a
 remote system is partly handled already, not a new category of problem. Real idempotency
 keys would pass through as the downstream system's own idempotency or external-reference

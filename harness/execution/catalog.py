@@ -46,14 +46,13 @@ def _precheck_create_po(db, args: CreatePoArgs) -> None:
 
 
 def _run_create_po(db, args: CreatePoArgs, ctx: ToolContext) -> dict:
-    po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
     total_value = round(args.qty * args.unit_price, 2)
     db.execute(
         "INSERT INTO erp_purchase_orders (po_id, part_id, supplier_id, qty, unit_price, "
         "total_value, ordered_date, promised_date, status, created_by) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)",
         (
-            po_id,
+            args.po_id,
             args.part_id,
             args.supplier_id,
             args.qty,
@@ -64,7 +63,7 @@ def _run_create_po(db, args: CreatePoArgs, ctx: ToolContext) -> dict:
             args.created_by,
         ),
     )
-    return {"po_id": po_id, "total_value": total_value}
+    return {"po_id": args.po_id, "total_value": total_value}
 
 
 def _compensation_args_create_po(args: CreatePoArgs, result: dict) -> CancelPoArgs:

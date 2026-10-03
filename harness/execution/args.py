@@ -10,8 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CreatePoArgs(BaseModel):
+    """`po_id` is supplied by the caller rather than generated inside
+    create_po's run(), so a workflow can decide it before approval and have
+    it be part of the frozen, approved plan: later steps (the notification,
+    the arrival-check schedule) need to reference the new PO's id, and
+    nothing may be computed between approval and execution.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
+    po_id: str
     part_id: str
     supplier_id: str
     qty: int = Field(gt=0)

@@ -23,6 +23,7 @@ def _reroute_steps(qty: int = 150, unit_price: float = 46.50) -> list[ToolCall]:
         ToolCall(
             tool="create_po",
             args={
+                "po_id": "PO-TEST",
                 "part_id": "P-4471",
                 "supplier_id": "S-Z",
                 "qty": qty,

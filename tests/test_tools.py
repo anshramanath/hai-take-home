@@ -94,7 +94,7 @@ def test_create_po_precheck_rejects_unapproved_supplier(make_harness):
     h = make_harness("scenario_a")
     tool = get_tool("create_po")
     args = CreatePoArgs(
-        part_id="P-4471", supplier_id="S-Q", qty=100, unit_price=39.0,
+        po_id="PO-TEST", part_id="P-4471", supplier_id="S-Q", qty=100, unit_price=39.0,
         promised_date="2026-09-05", created_by="u-101",
     )
     with pytest.raises(PrecheckFailed):
@@ -108,7 +108,7 @@ def test_create_po_precheck_rejects_nonexistent_supplier(make_harness):
     h = make_harness("scenario_a")
     tool = get_tool("create_po")
     args = CreatePoArgs(
-        part_id="P-4471", supplier_id="S-NOPE", qty=10, unit_price=10.0,
+        po_id="PO-TEST", part_id="P-4471", supplier_id="S-NOPE", qty=10, unit_price=10.0,
         promised_date="2026-09-05", created_by="u-101",
     )
     with pytest.raises(PrecheckFailed):
@@ -269,7 +269,7 @@ def test_cancel_po_compensates_create_po(make_harness):
     h = make_harness("scenario_a")
     tool = get_tool("create_po")
     args = CreatePoArgs(
-        part_id="P-4471", supplier_id="S-Z", qty=150, unit_price=46.50,
+        po_id="PO-TEST", part_id="P-4471", supplier_id="S-Z", qty=150, unit_price=46.50,
         promised_date="2026-09-04", created_by="u-101",
     )
     c = ctx(step="create")

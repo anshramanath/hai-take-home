@@ -24,7 +24,7 @@ def test_missing_scope_blocks_omar_creating_a_po(make_harness):
     h = make_harness("scenario_a")
     omar = get_user(h.conn, "u-202")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-202",
     })]
     result = gate(h.conn, omar, steps, workflow="workflow:reroute_po")
@@ -36,7 +36,7 @@ def test_workflow_only_tool_blocked_in_free_form_plan(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-101",
     })]
     result = gate(h.conn, dana, steps, workflow=None)
@@ -48,7 +48,7 @@ def test_workflow_only_tool_allowed_inside_its_own_workflow(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-101",
     })]
     result = gate(h.conn, dana, steps, workflow="workflow:reroute_po")
@@ -77,7 +77,7 @@ def test_value_under_requesters_limit_approver_is_requester(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 100, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-101",
     })]  # 4650.00, well under Dana's 25000 limit
     result = gate(h.conn, dana, steps, workflow="workflow:reroute_po")
@@ -88,7 +88,7 @@ def test_value_over_requesters_limit_routes_to_manager(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 700, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 700, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-101",
     })]  # 32550.00, over Dana's 25000 but under Marcus's 100000
     result = gate(h.conn, dana, steps, workflow="workflow:reroute_po")
@@ -101,7 +101,7 @@ def test_value_over_everyones_limit_blocks(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")
     steps = [ToolCall(tool="create_po", args={
-        "part_id": "P-4471", "supplier_id": "S-Z", "qty": 10000, "unit_price": 46.50,
+        "po_id": "PO-TEST", "part_id": "P-4471", "supplier_id": "S-Z", "qty": 10000, "unit_price": 46.50,
         "promised_date": "2026-09-04", "created_by": "u-101",
     })]  # 465000.00, over even Marcus's 100000
     result = gate(h.conn, dana, steps, workflow="workflow:reroute_po")

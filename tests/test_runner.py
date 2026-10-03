@@ -97,3 +97,32 @@ def test_run_approved_plan_compensates_in_reverse_on_a_mid_plan_failure(make_har
     events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
     assert "plan.step_failed" in events
     assert "action.compensated" in events
+
+
+def test_reallocation_target_lot_put_on_hold_after_approval_is_refused_at_execution(make_harness):
+    """Mirrors test_supplier_unapproved_after_approval_is_refused_at_execution_with_nothing_written
+    in test_workflow_engine.py, but for the free-form path: the plan approves
+    reallocating onto L-2101, then (as if someone placed it on hold moments
+    later) L-2101 goes stale before execution. reallocate_lot's precheck,
+    the same one every call to this tool goes through, must catch it.
+    """
+
+    h = make_harness("scenario_b_covers")
+    approval_id = _create_and_approve_reallocation(h)
+
+    h.conn.execute("UPDATE erp_lots SET status = 'hold' WHERE lot_id = 'L-2101'")
+    h.conn.commit()
+
+    status = run_approved_plan(h.conn, h.clock, approval_id, requester_id="u-202", run_id="run-1")
+
+    assert status == "compensated"
+    allocations = dict(h.conn.execute(
+        "SELECT lot_id, qty FROM erp_lot_allocations WHERE prod_order_id = '4820'"
+    ).fetchall())
+    assert allocations == {"L-2093": 100}  # the original allocation, untouched
+    assert h.conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 0
+
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
+    assert "action.precheck_failed" in events
+    assert "plan.step_failed" in events
+    assert "action.compensated" not in events  # nothing had executed yet to reverse

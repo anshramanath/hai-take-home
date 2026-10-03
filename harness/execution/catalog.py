@@ -381,10 +381,13 @@ _TOOLS: list[Tool] = [
     ),
     Tool(
         name="schedule_check",
-        description="Schedule a deferred follow-up task.",
+        description="Schedule a deferred follow-up task. Workflow-only: created_by_run must be "
+                     "the run's own id, which is never part of any context shown to a free-form "
+                     "plan, so a free-form proposal could never fill it in correctly.",
         input_schema=ScheduleCheckArgs,
         required_scopes=(),
         writes=True,
+        allowed_in=(WORKFLOW_REROUTE_PO,),
         run=_run_schedule_check,
         compensate="cancel_task",
         compensation_args=_compensation_args_schedule_check,
@@ -395,6 +398,7 @@ _TOOLS: list[Tool] = [
         input_schema=CancelTaskArgs,
         required_scopes=(),
         writes=True,
+        allowed_in=(WORKFLOW_REROUTE_PO,),
         run=_run_cancel_task,
     ),
     Tool(

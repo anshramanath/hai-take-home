@@ -357,6 +357,7 @@ REROUTE_PO_V1 = WorkflowDefinition(
         ),
     ),
     build_plan_steps=build_plan_steps,
+    applies_to_detectors=("stockout", "arrival_check"),
 )
 
 register(REROUTE_PO_V1)

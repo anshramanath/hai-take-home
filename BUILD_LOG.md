@@ -641,6 +641,106 @@ behavior to fix; per the lean review doc's own rule, they're documented, not bui
 
 ---
 
+## Phase 10: Scenario B against the real API
+
+### What prompted it
+
+Asked directly: does everything actually work against a real model, not just
+`FakeLLMClient`? `demo.py` always scripts Scenario B and the seven failure cases with a
+hand-scripted fake client by design (only Scenario A has a recorded-run requirement), so
+Scenario B's free-form path had only ever been exercised against a model that cannot
+surprise anyone. Driving it against the real API directly (`gpt-4o-mini`, the same model
+the rest of the build uses) surfaced three real bugs, none of them visible through
+`demo.py` or through any test using `FakeLLMClient`, since a fake client only ever returns
+exactly what it's told to.
+
+### What was found and fixed
+
+- **A real model still force-fit `reroute_po` onto a quality-hold item**, despite
+  `reroute_po`'s own description explicitly excluding that case (the phase 6 fix). Prompt
+  wording reduced this but did not eliminate it. Fixed structurally: `WorkflowDefinition`
+  gained `applies_to_detectors`, declaring which detector names raise the kind of item a
+  workflow can resolve (`reroute_po` declares `("stockout", "arrival_check")`, the second
+  because a missed-arrival re-entry item carries that detector name, not `"stockout"`, and
+  still needs to be able to propose a second reroute). `workflow_catalog_for_prompt()` and
+  the planner's schema-narrowing both filter by it now, so an inapplicable workflow is
+  neither shown in the prompt nor nameable at the schema level, regardless of what the
+  model's reasoning concludes. The filtering logic itself names no detector or workflow,
+  only reads a field each workflow declares about itself, so invariant 10 still holds.
+- **A real model proposed `schedule_check` in a free-form plan with `created_by_run`
+  missing.** That field has to be the run's own id, which is never part of any context a
+  free-form plan is shown, so a model acting in good faith has no way to supply it
+  correctly. Fixed by restricting `schedule_check` and its compensation `cancel_task` to
+  `reroute_po`, the same `allowed_in` mechanism the PO tools already use. Nothing in
+  Scenario B's own design ever needed a scheduled check; this was an available-by-default
+  oversight from phase 2, not a Scenario-B-specific gap.
+- **A real model substituted a proposal variant's own schema title for its `kind` value**:
+  `{"kind": "NoAction", ...}` instead of the required `{"kind": "none", ...}`, confirmed by
+  inspecting the generated schema directly, the `kind` field's `const` constraint is
+  correct, but it isn't enforced by the API under non-strict structured output (required
+  elsewhere by `ToolCall.args` / `WorkflowRequest.params`'s open dicts), so a model
+  confusing the two isn't caught before the harness sees it. This is the same root cause
+  phase 4's "required field, no default" fix addressed, just not the full extent of it: a
+  required field forces the model to write something, not to write the *correct* literal.
+  Fixed by giving `ToolPlan`, `WorkflowRequest`, and `NoAction` each a `model_config.title`
+  equal to their own `kind` value, so the schema's title and the correct answer are
+  identical no matter which the model copies.
+- **A real model has both written `summary` instead of `summary_for_user`, and, separately,
+  dropped the field entirely**, on both an original attempt and its one retry. The first
+  fix tried here was a `validation_alias` accepting either name; a cleaner fix followed
+  once it was clear `summary_for_user` is never actually read anywhere once written (it
+  lands in the audit log's record of the proposal and nowhere else, `explain` renders
+  `reasoning`, not this). Rather than widen what's accepted for one specific field name,
+  `ToolPlan` and `WorkflowRequest` now default it in a `model_validator(mode="before")`:
+  to `summary`, if that's what the model wrote, else to `reasoning` itself, which is
+  already a short, grounded justification in this build's own examples. The schema shown
+  to the model is unchanged either way, `model_json_schema()` always asks for the real
+  name as required, never an alias, never optional; this only changes what happens when a
+  model doesn't comply. The line this draws is deliberate: fields the gate, the workflow
+  engine, or execution actually consume (`kind`, `steps`, `reasoning`, `workflow`,
+  `params`) stay strictly required with no such fallback, only the one field nothing
+  downstream reads gets this treatment.
+- **The retry message was a relayed stack trace, not an instruction.** On the observed
+  `summary_for_user` omission, the retry fired with `f"Your previous output was invalid:
+  {exc}."`, where `{exc}` is the raw, stringified Pydantic `ValidationError` (field paths,
+  a dead-looking `For further information visit <url>` line) and the model dropped the
+  same field again. `OpenAIClient` raises `LLMOutputInvalid(...) from exc`, so the
+  original `ValidationError` is reachable as `__cause__`; the retry message now names
+  exactly which field(s) were missing or wrong in plain, imperative language instead of
+  relaying the exception, falling back to the plain message only when the cause isn't a
+  structured validation error (a scripted test exception, a refusal, a network error).
+- **A system-prompt line asking the model to be careful about completeness made things
+  worse, not better, and was reverted.** Tried: "Your response must be a single complete
+  object with every field the schema marks as required present, spelled exactly as the
+  schema names it, with no fields omitted and no extra fields added." Measured against the
+  real API before and after: 19/20 successful runs before this line, 0/20 after, every
+  single one choosing `NoAction` (the simplest, lowest-field-count option) instead of
+  attempting a `ToolPlan` for the quality-hold item it had been completing correctly
+  moments before. Emphasizing strict completeness seems to have made the model treat the
+  more complex proposal shapes as too risky to attempt rather than more careful about
+  attempting them. Removed entirely; the lesson is kept here rather than in the prompt,
+  since an instruction can fail silently in exactly the direction that looks safest
+  (fewer writes, not wrong ones) and would not have been caught by anything in the test
+  suite, only by measuring real-API behavior before and after the change.
+
+### What's still a known, accepted residual
+
+After the `summary_for_user` default and the sharper retry message (and reverting the
+system-prompt line above), Scenario B completed cleanly on 55 of 56 runs in the batches
+measured while those fixes were going in, up from roughly 1 in 3 before any of this
+phase's fixes. The one failure in that batch was not captured in enough detail to
+attribute to a specific cause (a logging gap in the throwaway check script, not the
+harness itself). Once the fixes were final, two further batches against the real API (12
+runs, then 25 more, 37 consecutive runs total) came back 100% clean, with full output
+capture on any failure this time so it would not go unexplained again; none occurred. The
+retry-then-fail design in section 10 still exists as the backstop for whatever this
+doesn't cover, some real model, on some future occasion, dropping a field this build still
+treats as strictly required (`kind`, `steps`, `reasoning`, `workflow`, `params`), and that
+is treated as accepted residual model unreliability, not a gap to keep chasing: `CLAUDE.md`
+names exactly this policy, one retry, then fail and report.
+
+---
+
 ## Deviations from `CLAUDE.md`, collected
 
 None of these touch section 2 (invariants) or section 3 (locked decisions) — they're
@@ -735,3 +835,44 @@ silently:
     the one genuinely different case: the scheduler noticing a task is due and dispatching
     it is not a tool write going through `executor.execute()` at all, so it has no
     `action.executed` counterpart to begin with and needs its own name.
+19. **`WorkflowDefinition` gained `applies_to_detectors`** (phase 10) — not in section 7's
+    contract. A real model proposed `reroute_po` for a quality-hold item despite its
+    description explicitly excluding that case; prompt wording reduced this but did not
+    eliminate it. The planner now filters both the prompt's `available_workflows` and the
+    schema-level `Literal` of nameable workflow values by this field, so an inapplicable
+    workflow is never shown and can never be named, a structural fix rather than a wording
+    one. The filtering code itself names no specific detector or workflow (invariant 10).
+20. **`schedule_check` and `cancel_task` became workflow-only** (phase 10), restricted to
+    `reroute_po` the same way the four PO tools already are. `schedule_check`'s
+    `created_by_run` must be the run's own id, which is never part of any context a
+    free-form plan is shown; a real model proposed it anyway with that field missing. An
+    available-by-default oversight from phase 2's original tool catalog, not something
+    Scenario B's own design ever needed.
+21. **Every `Proposal` variant's `model_config.title` is set to its own `kind` value**
+    (phase 10), rather than left as the Python class name. Non-strict structured output
+    (required elsewhere by `ToolCall.args` / `WorkflowRequest.params`'s open dicts) does
+    not enforce the `const` on `kind`; a real model substituted a variant's schema title
+    for the literal it should have copied (`{"kind": "NoAction", ...}` instead of
+    `{"kind": "none", ...}`). Matching every title to its own kind value removes the
+    mismatch regardless of which variant the model confuses.
+22. **`summary_for_user` defaults rather than being strictly required** (phase 10) on
+    `ToolPlan` and `WorkflowRequest`, via a `model_validator(mode="before")`: to `summary`
+    if the model wrote that instead, else to `reasoning`. Superseded an earlier
+    `validation_alias` attempt once it was clear the field is never read anywhere once
+    written (it lands in the audit log's record of the proposal and nowhere else). The
+    schema shown to the model is unchanged, still the real name, still required; this only
+    changes what happens when a model doesn't comply. Every field something downstream
+    actually consumes stays strictly required with no such fallback.
+23. **The planner's retry message names specific missing or wrong fields**, built from the
+    original `ValidationError` (reachable as `LLMOutputInvalid.__cause__`), instead of
+    relaying `str(exc)` (phase 10). The raw, stack-trace-shaped error was observed not
+    working: a retry given exactly that message dropped the same field again. Falls back
+    to the plain message when the cause isn't a structured validation error.
+24. **A system-prompt line emphasizing complete, nothing-omitted output was tried, measured,
+    and reverted** (phase 10). It dropped Scenario B's real-API success rate from 19/20 to
+    0/20, every run choosing `NoAction` instead of attempting the more complex `ToolPlan`
+    it had just been completing correctly. Not deviation in the sense of "we did this
+    differently"; the deviation is leaving a documented negative result in place rather
+    than quietly discarding it, since this is exactly the kind of change that fails in the
+    direction that looks safest (fewer writes) and nothing in the test suite would ever
+    catch it, only measuring real-API behavior before and after did.

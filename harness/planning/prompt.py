@@ -71,7 +71,7 @@ def build_messages(
         "attention_item": {"summary": item.summary, "facts": item.facts},
         "context": {source: slice_.records for source, slice_ in context.items()},
         "memory_hints": memory_facts,
-        "available_workflows": workflow_catalog_for_prompt(),
+        "available_workflows": workflow_catalog_for_prompt(item.detector),
         "available_tools": _tools_for_user(user),
     }
     return [

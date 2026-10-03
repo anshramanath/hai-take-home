@@ -46,6 +46,33 @@ def test_workflow_only_tool_blocked_in_free_form_plan(make_harness):
     assert "workflow-only" in result.reason
 
 
+def test_schedule_check_is_workflow_only(make_harness):
+    """schedule_check's created_by_run must be the run's own id, never
+    part of any context shown to a free-form plan; a real model, finding
+    it in its free-form tool catalog, proposed it anyway with that field
+    missing. Restricting it to the workflow removes the temptation
+    entirely: it's no longer even in a free-form prompt's tool list.
+    """
+
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    steps = [ToolCall(tool="schedule_check", args={
+        "run_at": "2026-09-08", "kind": "arrival_check", "payload": {}, "created_by_run": "run-1",
+    })]
+    result = gate(h.conn, dana, steps, workflow=None)
+    assert isinstance(result, Blocked)
+    assert "workflow-only" in result.reason
+
+
+def test_cancel_task_is_workflow_only(make_harness):
+    h = make_harness("scenario_a")
+    dana = get_user(h.conn, "u-101")
+    steps = [ToolCall(tool="cancel_task", args={"task_id": "T-X"})]
+    result = gate(h.conn, dana, steps, workflow=None)
+    assert isinstance(result, Blocked)
+    assert "workflow-only" in result.reason
+
+
 def test_workflow_only_tool_allowed_inside_its_own_workflow(make_harness):
     h = make_harness("scenario_a")
     dana = get_user(h.conn, "u-101")

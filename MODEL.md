@@ -105,17 +105,19 @@ args from this call's own args and result).
 | `restore_po` | `erp:po:cancel` | `reroute_po` | (none) | compensation only, declares none itself |
 | `notify_user` | `production:notify` | no | (none) | `send_correction` |
 | `send_correction` | `production:notify` | no | (none) | compensation only |
-| `schedule_check` | (none) | no | (none) | `cancel_task` |
-| `cancel_task` | (none) | no | (none) | compensation only |
+| `schedule_check` | (none) | `reroute_po` | (none) | `cancel_task` |
+| `cancel_task` | (none) | `reroute_po` | (none) | compensation only |
 | `reallocate_lot` | `erp:lot:allocate` | no | (none) | itself, with `remove`/`add` swapped |
 | `flag_shortage` | `purchasing:flag` | no | (none) | `withdraw_flag` |
 | `withdraw_flag` | `purchasing:flag` | no | (none) | compensation only |
 
 Only `create_po` declares `value`, since it's the one tool whose dollar size should route
 approval; `reallocate_lot` and `notify_user` move real things but have no price tag, so
-the threshold rule never sees them. The four PO tools are workflow-only (`reroute_po` is
-the only workflow registered); every other write tool has `allowed_in=None` and is usable
-from a free-form plan.
+the threshold rule never sees them. Six tools are workflow-only (the four PO tools, plus
+`schedule_check` and `cancel_task`, restricted after a real model proposed `schedule_check`
+in a free-form plan with its required `created_by_run` field missing, a value never
+derivable from anything shown to a free-form planner); every other write tool has
+`allowed_in=None` and is usable from a free-form plan.
 
 ## Clock
 

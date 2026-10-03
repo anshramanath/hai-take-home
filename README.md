@@ -205,11 +205,15 @@ change if the same underlying problem reappeared (see `detection/quality_hold.py
 smallest real example).
 
 **Workflow**: define `params_model`, a tuple of `Step`s (`kind` one of `"check"` / `"llm"`
-/ `"action"`), and `build_plan_steps` in a new `execution/workflows/<name>.py`, following
+/ `"action"`), `build_plan_steps`, and `applies_to_detectors` (the detector names whose
+items this workflow can resolve) in a new `execution/workflows/<name>.py`, following
 `reroute_po.py`'s shape; call `register(...)` at import time and make sure something
 imports the module (see `execution/workflows/__init__.py`) so registration actually runs.
 This bit me twice during development (see **Notes**) before it became an explicit,
 guaranteed side-effect import in both `app.py` and `tests/conftest.py`.
+`applies_to_detectors` is what keeps a model from being shown (and from being able to
+name, even at the schema level) a workflow that doesn't apply to the item it was given;
+see **Notes** for why prompt wording alone wasn't enough.
 
 ## What Scenario B required
 
@@ -288,14 +292,32 @@ byte-identical to before.
   human actually approved may be recomputed between approval and execution, including an
   id. `promised_date` is the one field that moved the other way (see above), precisely
   because it isn't something a human approves a specific value for.
-- **Two bugs were found only by running against the real API, not by reasoning about the
-  code**: a workflow-registration side effect that depended on some other import having
-  already triggered it (fixed by making the import explicit in both `app.py` and
-  `tests/conftest.py`), and OpenAI's strict structured-output mode rejecting the
-  intentionally open `dict` fields in `ToolCall.args` / `WorkflowRequest.params` (fixed by
-  building the request with `"strict": false` by hand and trusting Pydantic's own
-  validation on the response). Full account of both, and more real-model findings that
-  shaped prompt and schema design, in `BUILD_LOG.md`.
+- **Several bugs were found only by running against the real API, not by reasoning about
+  the code**: a workflow-registration side effect that depended on some other import
+  having already triggered it (fixed by making the import explicit in both `app.py` and
+  `tests/conftest.py`); OpenAI's strict structured-output mode rejecting the intentionally
+  open `dict` fields in `ToolCall.args` / `WorkflowRequest.params` (fixed by building the
+  request with `"strict": false` by hand and trusting Pydantic's own validation on the
+  response); and, found later, specifically by driving Scenario B against the real API
+  directly rather than through `demo.py`'s scripted path, four more: a real model
+  force-fitting `reroute_po` onto a quality-hold item despite its description explicitly
+  excluding that case (fixed structurally with `applies_to_detectors`, not just better
+  wording); a real model proposing `schedule_check` in a free-form plan with its required
+  `created_by_run` missing, since that value is never shown to a free-form planner at all
+  (fixed by restricting the tool to the workflow); a real model substituting a variant's
+  own schema title for its `kind` value (`{"kind": "NoAction", ...}` instead of `{"kind":
+  "none", ...}`) (fixed by matching every variant's schema title to its own `kind` value);
+  and a real model both misnaming and, separately, dropping `summary_for_user` entirely,
+  a field nothing downstream actually reads (fixed by defaulting it instead of requiring
+  it, and by making the one existing retry name the specific missing field rather than
+  relaying a raw validation error). One more worth naming because it looked like the
+  obvious fix and wasn't: adding a system-prompt line asking the model to be careful about
+  field completeness measurably made Scenario B's real-API success rate worse (19/20 to
+  0/20), not better, the model became more likely to retreat to `NoAction` than to attempt
+  a more complex proposal; reverted, and left in `BUILD_LOG.md` as a documented negative
+  result rather than quietly discarded, since nothing in the test suite would have caught
+  it, only measuring real-API behavior before and after did. Full account of all of these,
+  and more real-model findings that shaped prompt and schema design, in `BUILD_LOG.md`.
 
 ## Known limitations
 

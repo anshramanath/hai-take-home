@@ -106,6 +106,18 @@ class WorkflowDefinition:
     params_model: type
     steps: tuple[Step, ...]
     build_plan_steps: Callable[[sqlite3.Connection, Clock, dict[str, Any], str], list[ToolCall]]
+    applies_to_detectors: tuple[str, ...]
+    """Which detector names raise the kind of attention item this workflow
+    can resolve. A real model, shown this workflow as an option regardless
+    of what raised the item, will sometimes repurpose an unrelated id to
+    force-fit it onto a problem it was never meant for. Prompt wording
+    describing when a workflow applies helps but isn't reliable by itself;
+    this makes "does this workflow even apply to this kind of item" a
+    structural question the planner answers before the model is ever shown
+    the workflow at all, not a judgment call left to the model every time.
+    Declared per workflow (here, not in the planner) so invariant 10
+    holds: the planner's own filtering logic never names a specific
+    detector or workflow."""
 
 
 _REGISTRY: dict[tuple[str, int], WorkflowDefinition] = {}
@@ -136,16 +148,35 @@ def registered_workflow_names() -> list[str]:
     return sorted({name for (name, _version) in _REGISTRY})
 
 
-def workflow_catalog_for_prompt() -> list[dict[str, Any]]:
+def registered_workflow_names_for_detector(detector: str) -> list[str]:
+    """Only the names of workflows that declare `detector` in their own
+    `applies_to_detectors`. The one place that knowledge is used; it reads
+    a field each workflow declares about itself, so this stays generic
+    over whatever detector name it's given, never naming one.
+    """
+
+    names = set()
+    for name in registered_workflow_names():
+        definition = get_definition(name, latest_version(name))
+        if detector in definition.applies_to_detectors:
+            names.add(name)
+    return sorted(names)
+
+
+def workflow_catalog_for_prompt(detector: str | None = None) -> list[dict[str, Any]]:
     """What the planner shows the model for each registered workflow (at
     its latest version): name, description, and the exact params schema it
     must supply — built from the registry at runtime, never hardcoded
     (section 7). A bare name is not enough for the model to know when a
     workflow applies or what parameters it takes.
+
+    When `detector` is given, only workflows that declare it are shown at
+    all: a model can't force-fit a workflow it never sees as an option.
     """
 
+    names = registered_workflow_names_for_detector(detector) if detector is not None else registered_workflow_names()
     catalog = []
-    for name in registered_workflow_names():
+    for name in names:
         definition = get_definition(name, latest_version(name))
         catalog.append({
             "name": definition.name,

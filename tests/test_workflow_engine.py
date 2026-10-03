@@ -393,6 +393,33 @@ def test_supplier_unapproved_after_approval_is_refused_at_execution_with_nothing
     assert "action.precheck_failed" in events
 
 
+def test_requesters_scope_revoked_after_approval_is_refused_at_execution(make_harness):
+    """Section 15.4's literal case: the requester had the scope at
+    approval time (the gate already checked it), it's revoked before
+    execution runs, and the executor's own fresh scope read catches it.
+    Distinct from `test_permission_model_tools_never_run_without_scope`,
+    which uses a requester who never had the scope at all and so never
+    actually exercises "approved, then revoked."
+    """
+
+    h = make_harness("scenario_a")
+    row, llm, dana = _enter_and_approve(h)
+    decide(h.conn, h.clock, approval_id=json.loads(row["state"])["_approval_id"], decided_by="u-101", decision="approved")
+
+    h.conn.execute("UPDATE users SET scopes = '[]' WHERE user_id = 'u-101'")
+    h.conn.commit()
+
+    final = resume_after_approval(h.conn, h.clock, llm, row["instance_id"])
+
+    assert final["status"] == "compensated"
+    assert h.conn.execute("SELECT COUNT(*) FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()[0] == 0
+    assert h.conn.execute(
+        "SELECT qty, status FROM erp_purchase_orders WHERE po_id = 'PO-77812'"
+    ).fetchone()[:] == (400, "open")
+    events = [r[0] for r in h.conn.execute("SELECT event FROM audit_log ORDER BY seq")]
+    assert "action.scope_denied" in events
+
+
 # ---------------------------------------------------------------------------
 # Resumption and the crash hook
 

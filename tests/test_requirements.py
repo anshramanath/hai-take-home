@@ -143,8 +143,10 @@ def test_a6_follow_up_schedules_a_check_and_re_enters_if_missing(make_harness):
     llm = _reroute_llm()
 
     tick(h.conn, h.clock, llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
-    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-101")
+    # Dana is OOO starting the very next day (E-002); a single tick already
+    # escalates this approval to her backup before returning.
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     task = h.conn.execute("SELECT run_at FROM scheduled_tasks").fetchone()
     assert task is not None  # a follow-up was scheduled
@@ -166,8 +168,11 @@ def test_a7_explain_reconstructs_the_story_from_audit_alone(make_harness):
     h = make_harness("scenario_a")
     llm = _reroute_llm()
     tick(h.conn, h.clock, llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
-    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-101")
+    # Dana is OOO starting the very next day (E-002); a single tick already
+    # escalates this approval to her backup before returning. "u-101" still
+    # appears in the explain output regardless, via "context for u-101".
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     text = "\n".join(explain(h.conn))
 

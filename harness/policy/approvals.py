@@ -148,11 +148,13 @@ def _out_of_office_event(conn: sqlite3.Connection, user_id: str, day: date) -> s
 
 
 def escalate_pending(conn: sqlite3.Connection, clock: Clock) -> list[str]:
-    """Run once per tick, after the clock has advanced for the day. Any
-    approval still pending whose approver's calendar shows them out of
-    office tomorrow gets reassigned to their backup (walking the backup's
-    own manager chain if the backup's limit is too low). Returns the ids of
-    approvals that were escalated.
+    """Run once per tick, last, right before the clock advances -- so it
+    sees today's own newly-created approvals too, not just ones already
+    pending from a prior tick (app.py's tick()). Any approval still pending
+    whose approver's calendar shows them out of office tomorrow gets
+    reassigned to their backup (walking the backup's own manager chain if
+    the backup's limit is too low). Returns the ids of approvals that were
+    escalated.
     """
 
     tomorrow = clock.today() + timedelta(days=1)

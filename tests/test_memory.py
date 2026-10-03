@@ -141,8 +141,10 @@ def test_scenario_a_completion_writes_a_fact_only_after_approval_not_before(make
     tick(h.conn, h.clock, llm)
     assert h.conn.execute("SELECT COUNT(*) FROM memory_facts").fetchone()[0] == 0
 
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
-    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-101")
+    # Dana is OOO starting the very next day (E-002); a single tick already
+    # escalates this approval to her backup before returning.
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     fact = h.conn.execute("SELECT subject, fact, source_ids FROM memory_facts").fetchone()
     assert fact["subject"] == "S-Y"

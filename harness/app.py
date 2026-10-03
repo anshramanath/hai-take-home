@@ -212,9 +212,20 @@ def handle_attention_item(
 
 def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:
     """Everything scoped to "today" runs before the clock advances: due
-    scheduled tasks, approval escalation, resuming any workflow a crash
-    left running, detection, and planning for anything still unplanned.
-    The clock advances last, preparing for the next tick.
+    scheduled tasks, resuming any workflow a crash left running, detection,
+    planning for anything still unplanned, and -- last, right before the
+    day turns over -- approval escalation. The clock advances after that,
+    preparing for the next tick.
+
+    Escalation runs last, not first, so it can see an approval this same
+    tick's own planning just created: the escalation rule is "unanswered
+    at end of day X, approver out on day X+1," and a request raised and
+    planned on day X is already a same-day candidate for that check. Running
+    escalation before planning (as this used to) meant a same-day approval
+    was invisible to it until the following tick -- a full day of the
+    approver already being unreachable (not just "tomorrow") before the
+    system noticed and routed around them, in a scenario whose entire
+    premise is that the delay matters.
 
     Planning runs over every `open` attention item, not just the ones
     `run_detectors` returned this tick: an arrival-check task firing in
@@ -223,13 +234,14 @@ def tick(conn: sqlite3.Connection, clock: Clock, llm_client: LLMClient) -> dict:
     """
 
     fired_tasks = run_due_tasks(conn, clock)
-    escalated = escalate_pending(conn, clock)
     resumed = resume_all(conn, clock, llm_client)
     resumed_executions = resume_pending_executions(conn, clock, llm_client)
     new_item_ids = run_detectors(conn, clock)
 
     unplanned = conn.execute("SELECT * FROM attention_items WHERE status = 'open'").fetchall()
     run_ids = [handle_attention_item(conn, clock, llm_client, row) for row in unplanned]
+
+    escalated = escalate_pending(conn, clock)
 
     today_before = clock.today().isoformat()
     clock.advance(1)

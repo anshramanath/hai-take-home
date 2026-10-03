@@ -864,6 +864,57 @@ cover the catalog function directly.
 All five target packages remain at 100% line coverage; 269 tests pass (10 more than before
 this phase).
 
+### Phase 12: escalation ran a full day late, and a second bug it exposed
+
+A close review of the recorded run against the assignment's own worked example (section 2:
+"the approver's calendar shows them out of office tomorrow... it routes to their backup")
+caught that the audit log's actual escalation reason read "out of office 2026-09-04" for a
+request made on 9/2 -- two days later, not the next day the example describes.
+
+**Root cause**: `app.py`'s `tick()` ran `escalate_pending()` *before* that same tick's own
+detection and planning, so an approval created on day X was invisible to the escalation
+check running in that same tick -- it only became visible on the *following* tick, whose
+check then asks "is the approver out tomorrow" relative to day X+1, landing on X+2. One
+full day of the approver already being unreachable (not just "tomorrow") passed before the
+system noticed and routed around them, in a scenario whose entire premise is that the
+delay matters. **Fix**: moved `escalate_pending()` to run last in `tick()`, right before
+`clock.advance(1)`, so it sees the current tick's own newly-created approvals. Confirmed
+against the assignment's own text, not just against the code's prior behavior: escalation
+now reads "out of office 2026-09-03," matching the worked example's "out tomorrow"
+framing exactly. Six tests had hardcoded the old two-tick timing or a stale `decided_by=
+"u-101"` (the approval is now already escalated to Priya after a single tick, since Dana
+is OOO starting the very next day); updated to fetch the actual current approver instead
+of assuming who holds it. `demo.py`'s Scenario A narrative was restructured similarly: the
+escalation message used to come from a second `tick()` call's own result; now both the
+request and the escalation happen inside the first tick, so the narration pulls both the
+`approval.requested` and `approval.escalated` audit events' detail directly rather than
+re-querying the approvals table after the fact (which would already show the post-
+escalation state). The approval prompt's actual `summary_for_user` text is now printed too
+(the deliverable asks the recorded run to show "the approval prompt," not just that one
+was requested) -- found missing in the same review.
+
+**Found as a direct consequence of the fix, re-recording the run**: shifting the approval
+earlier moved the new PO's promised date from 9/6 to 9/5, which left an extra tick between
+the arrival check confirming receipt and 4812's 9/7 start -- a tick in which the stockout
+detector ran again and re-flagged the exact same, already-delivered PO as newly at risk.
+This is a separate, pre-existing bug the date shift exposed, not introduced by it: nothing
+ever closes a PO's `open` status on receipt (`world/receipts.py` only inserts into
+`erp_receipts`), and `on_hand` itself never updates on a receipt either, so the stockout
+detector's thin-margin check had no way to tell "still an open promise" from "already
+delivered" -- it would have hit the same real model's actual demo run too, just one tick
+later than this review happened to look. Confirmed this would have recurred with the old
+timing as well had anything ever ticked that far past the original 9/6 arrival in the same
+run. **Fix**: the thin-margin check now skips an inbound PO once `erp_receipts` shows it
+fully received, while still counting its quantity toward the balance (it's real stock, not
+reflected anywhere else, so dropping it from the balance would make `short` fire
+incorrectly instead). `test_an_already_received_inbound_po_no_longer_counts_as_thin_margin`
+(`test_detection.py`) covers it directly. `runs/scenario_a.txt` and
+`runs/scenario_a_responses.json` were re-recorded against the real API with both fixes in
+place; the story now ends cleanly right after the arrival check confirms receipt, with no
+dangling second reroute.
+
+All five target packages remain at 100% line coverage; 270 tests pass.
+
 ---
 
 ## Deviations from `CLAUDE.md`, collected
@@ -1043,3 +1094,19 @@ silently:
     the retry mechanism above, which needed this logging to be auditable; no existing test
     had caught the gap, since `gate()` itself is correctly unit-tested in isolation and
     nothing end-to-end had asserted the caller recorded its result.
+31. **`escalate_pending()` moved to run last in `tick()`, after detection and planning,
+    not first** (phase 12) -- a real bug, not a stylistic reordering. Running it first
+    meant a same-day approval didn't exist yet when that tick's own check ran, so
+    escalation only ever evaluated approvals a full tick late, landing one calendar day
+    after the assignment's own worked example's "out tomorrow" framing. Caught by checking
+    the actual dated audit output against that example's text directly, not just that
+    escalation fired at all.
+32. **The stockout detector's thin-margin check now skips an inbound PO already confirmed
+    received** (`erp_receipts`), while still counting its quantity toward the balance
+    (phase 12) -- not in section 8's contract. Without it, the same already-delivered PO
+    got re-flagged as newly at risk on every later tick for as long as its `promised_date`
+    stayed inside the margin window, since nothing ever closes a PO's `open` status on
+    receipt and `on_hand` itself never updates either. Found as a direct consequence of
+    re-recording Scenario A after fixing deviation 31 above, which left an extra tick
+    between the arrival confirmation and the production order's start for this to recur
+    in -- a pre-existing gap the date shift exposed, not one it introduced.

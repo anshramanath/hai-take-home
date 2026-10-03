@@ -167,6 +167,41 @@ def test_a_new_dependent_po_after_a_reroute_gets_a_new_dedupe_key(make_harness):
     assert "stockout:P-4471:4812:PO-NEWZ" in new_keys
 
 
+def test_an_already_received_inbound_po_no_longer_counts_as_thin_margin(make_harness):
+    """A real run surfaced this: once the arrival check confirms a receipt,
+    the inbound PO is still inside the margin window (its promised_date
+    hasn't moved), so a later tick's detector pass re-flagged the exact
+    same, already-fulfilled PO as newly at risk -- forever, since nothing
+    ever closes a PO's 'open' status on receipt (world/receipts.py). The
+    quantity still counts toward the balance (it's real stock, reflected
+    nowhere else since on_hand itself never updates on a receipt), but a
+    confirmed delivery is no longer the kind of unconfirmed promise
+    thin_margin exists to flag.
+    """
+    h = make_harness("scenario_a")
+    run_detectors(h.conn, h.clock)  # the original item, now "known"
+
+    h.conn.execute("UPDATE erp_purchase_orders SET qty = 10, total_value = 420 WHERE po_id = 'PO-77812'")
+    h.conn.execute(
+        "INSERT INTO erp_purchase_orders (po_id, part_id, supplier_id, qty, unit_price, total_value, "
+        "ordered_date, promised_date, status, created_by) VALUES "
+        "('PO-NEWZ', 'P-4471', 'S-Z', 150, 46.50, 6975.00, '2026-09-02', '2026-09-04', 'open', 'u-101')"
+    )
+    h.conn.execute(
+        "INSERT INTO erp_receipts (receipt_id, po_id, qty, received_date) VALUES "
+        "('RCPT-1', 'PO-NEWZ', 150, '2026-09-04')"
+    )
+    h.conn.commit()
+
+    created = run_detectors(h.conn, h.clock)
+
+    new_keys = [
+        h.conn.execute("SELECT dedupe_key FROM attention_items WHERE item_id = ?", (i,)).fetchone()[0]
+        for i in created
+    ]
+    assert "stockout:P-4471:4812:PO-NEWZ" not in new_keys
+
+
 # ---------------------------------------------------------------------------
 # QualityHoldDetector (Scenario B)
 

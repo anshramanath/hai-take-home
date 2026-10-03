@@ -30,12 +30,15 @@ def test_workflow_path_makes_no_llm_calls_between_approval_and_execution(make_ha
         DraftNotificationResponse(body="Reroute in progress."),
     ])
     tick(h.conn, h.clock, planning_llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    # Dana is OOO starting the very next day (E-002), so a single tick
+    # (detect, plan, then escalate -- in that order) already escalates
+    # this approval to her backup before returning.
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
 
     # FakeLLMClient([]) raises on its very first call; a client this
     # starved of scripted responses must never actually be asked anything.
     raising_llm = FakeLLMClient([])
-    approve(h.conn, h.clock, raising_llm, approval_id=approval["approval_id"], decided_by="u-101")
+    approve(h.conn, h.clock, raising_llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     instance = h.conn.execute("SELECT status FROM workflow_instances").fetchone()
     assert instance["status"] == "completed"

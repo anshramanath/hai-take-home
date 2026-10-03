@@ -269,19 +269,38 @@ not because Scenario B's own logic required anything scenario-specific in the co
 ## Notes
 
 - **Arrival check timing**: scheduled at Supplier Z's own promised arrival date
-  (2026-09-06 in the demo run, after escalation pushes approval to 9/4 and Z's 2-day lead
-  time is measured from there), not literally "Tuesday" as the assignment's own worked
-  example says. Tuesday there is that example's own stand-in for "whenever the
+  (2026-09-05 in the demo run, after escalation routes approval to Priya on 9/3 and Z's
+  2-day lead time is measured from there), not literally "Tuesday" as the assignment's own
+  worked example says. Tuesday there is that example's own stand-in for "whenever the
   replacement PO is promised to arrive"; this harness's numbers put the equivalent point
   on a different day once escalation and lead time are accounted for. Checking at Tuesday
   specifically would be checking after production order 4812 is already scheduled to
   start (9/7), discovering a missed delivery too late to act on it. The demo doesn't pad
   out extra ticks to reach a date with nothing left to show.
-- **`tick()` advances the clock last, not first.** The escalation rule reads as "if
-  unanswered at end of the day that's ending, and the approver is out tomorrow," a check
-  meant to run while "today" is still that day. Advancing first would process tomorrow's
-  date on the very first tick after seeding and would shift the escalation's "is the
-  approver out tomorrow" check by a day from how it's built and tested.
+- **The stockout detector skips an inbound PO that's already been received in full when
+  deciding whether coverage is thin-margin, but still counts its quantity toward the
+  balance.** `record_receipt()` never closes a PO's `open` status (section 5's receipts
+  table is deliberately a separate fact from the PO itself), and `on_hand` itself never
+  updates on a receipt either, so the PO's quantity has to keep counting toward the
+  balance or real, already-delivered stock would vanish from the projection. But once a
+  receipt confirms it, that PO is no longer the kind of unconfirmed promise thin-margin
+  exists to flag; without this check, the exact same already-fulfilled PO gets re-flagged
+  as newly at risk on every later tick for as long as its `promised_date` stays inside the
+  margin window, which a tick running after the arrival check confirms it hit directly.
+- **`tick()` advances the clock last, not first, and escalation runs last within that,
+  after detection and planning, not before.** The escalation rule reads as "if unanswered
+  at end of the day that's ending, and the approver is out tomorrow," a check meant to run
+  while "today" is still that day, which rules out advancing first. The second half
+  (escalation after planning, not before) was a real bug, not a design choice: with
+  escalation running first, a same-day approval didn't exist yet when that tick's own
+  check ran, so it only became visible to escalation on the *following* tick -- a full
+  extra day of Dana already being unreachable before the system noticed and routed around
+  her, in a scenario whose premise is that the delay matters. Caught by checking the
+  actual dated output against the assignment's own worked example (which cites the
+  approver being out the day immediately after the request, not two days after) rather
+  than just checking that escalation fired at all. Running it last, after this tick's own
+  newly-created approvals exist, is what makes a same-day request a same-day candidate for
+  the check.
 - **A gate rejection triggers a second planning attempt only when the rejection itself is
   one a fresh proposal could plausibly fix.** Re-planning after a gate rejection is
   optional per the assignment's own framing, capped at one retry; most rejections (a

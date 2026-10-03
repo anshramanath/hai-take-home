@@ -62,8 +62,8 @@ def test_mail_body_text_never_appears_in_audit_detail(make_harness):
         DraftNotificationResponse(body="Heads up: part of your incoming shipment is being rerouted."),
     ])
     tick(h.conn, h.clock, llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
-    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-101")
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     all_detail_text = " ".join(
         row[0] for row in h.conn.execute("SELECT detail FROM audit_log")

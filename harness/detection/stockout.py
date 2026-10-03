@@ -116,6 +116,16 @@ class StockoutDetector:
         for po_id, promised_date, qty, created_by, supplier_id in inbound_in_window:
             if (scheduled_start - promised_date).days > MARGIN_DAYS:
                 continue
+            if self._already_received_in_full(conn, po_id, qty):
+                # Still counted in inbound_total above (it's real stock,
+                # reflected nowhere else since on_hand itself never updates
+                # on a receipt), but a confirmed delivery is no longer the
+                # kind of unconfirmed promise thin_margin exists to flag --
+                # found empirically: re-running the detector after the
+                # arrival check confirms a receipt re-flagged that same,
+                # already-fulfilled PO as newly at risk, forever, as long as
+                # its promised_date stayed within the margin window.
+                continue
             if balance - qty < required_qty:
                 return self._make_item(
                     conn, "thin_margin", part_id, prod_order_id, po_id, created_by, supplier_id,
@@ -123,6 +133,12 @@ class StockoutDetector:
                 )
 
         return None
+
+    def _already_received_in_full(self, conn: sqlite3.Connection, po_id: str, qty: int) -> bool:
+        received = conn.execute(
+            "SELECT COALESCE(SUM(qty), 0) FROM erp_receipts WHERE po_id = ?", (po_id,)
+        ).fetchone()[0]
+        return received >= qty
 
     def _make_item(
         self,

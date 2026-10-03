@@ -34,11 +34,15 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
     h = make_harness("scenario_a")
     llm = _reroute_llm()
 
-    # Day 1 (9/2): detection, planning, workflow checks, approval request to Dana.
+    # Day 1 (9/2): detection, planning, workflow checks, approval request to
+    # Dana, then escalation within this same tick -- she's OOO starting the
+    # very next day (E-002), so "unanswered at end of 9/2, out on 9/3" is
+    # already true before the clock turns over, and it routes to Priya.
     tick1 = tick(h.conn, h.clock, llm)
     assert tick1["new_items"]
     approval = h.conn.execute("SELECT * FROM approvals").fetchone()
-    assert approval["approver_id"] == "u-101"
+    assert approval["approval_id"] in tick1["escalated"]
+    assert approval["approver_id"] == "u-102"
     assert approval["status"] == "pending"
 
     instance = h.conn.execute("SELECT * FROM workflow_instances").fetchone()
@@ -49,15 +53,8 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
     assert "S-W" in [e["supplier_id"] for e in state["excluded_by_lead_time"]]
     assert h.conn.execute("SELECT COUNT(*) FROM erp_purchase_orders WHERE supplier_id = 'S-Z'").fetchone()[0] == 0
 
-    # No answer. Day 2 (9/3): Dana is OOO per E-002, so escalation routes to Priya.
-    tick2 = tick(h.conn, h.clock, llm)
-    assert approval["approval_id"] in tick2["escalated"]
-    approval_after = h.conn.execute("SELECT * FROM approvals").fetchone()
-    assert approval_after["approver_id"] == "u-102"
-    assert approval_after["status"] == "pending"
-
     # Priya approves, through the same code path the approve CLI uses.
-    approve(h.conn, h.clock, llm, approval_id=approval_after["approval_id"], decided_by="u-102")
+    approve(h.conn, h.clock, llm, approval_id=approval["approval_id"], decided_by="u-102")
 
     final_instance = h.conn.execute("SELECT * FROM workflow_instances").fetchone()
     assert final_instance["status"] == "completed"
@@ -79,10 +76,11 @@ def test_scenario_a_runs_from_detection_through_escalation_to_execution(make_har
 
     task = h.conn.execute("SELECT kind, run_at FROM scheduled_tasks").fetchone()
     assert task["kind"] == "arrival_check"
-    # Approval lands on 9/4 (after escalation); Z's 2-day lead time is
-    # measured from execution-time "today" (F3), so the real promise is
-    # 9/6, not the 9/4 a plan approved on 9/2 would have frozen.
-    assert task["run_at"] == "2026-09-06"
+    # Escalation and approval both land on 9/3 (escalation now runs at the
+    # end of the same tick that created the approval); Z's 2-day lead time
+    # is measured from execution-time "today" (F3), so the real promise is
+    # 9/5, not a date a plan approved on 9/2 would have frozen.
+    assert task["run_at"] == "2026-09-05"
 
     run_row = h.conn.execute("SELECT status FROM runs").fetchone()
     assert run_row["status"] == "completed"
@@ -226,9 +224,11 @@ def test_scenario_a_rejection_marks_the_run_and_instance_rejected_and_writes_not
     llm = _reroute_llm()
 
     tick(h.conn, h.clock, llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
+    # Dana is OOO starting the very next day (E-002); a single tick already
+    # escalates this approval to her backup before returning.
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
 
-    reject(h.conn, h.clock, approval_id=approval["approval_id"], decided_by="u-101")
+    reject(h.conn, h.clock, approval_id=approval["approval_id"], decided_by=approval["approver_id"])
 
     assert h.conn.execute("SELECT status FROM approvals").fetchone()["status"] == "rejected"
     assert h.conn.execute("SELECT status FROM workflow_instances").fetchone()["status"] == "rejected"

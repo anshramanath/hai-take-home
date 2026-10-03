@@ -20,6 +20,7 @@ undisturbed Scenario A story.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -100,25 +101,36 @@ def run_scenario_a(console: Console, harness: Harness, llm_client: LLMClient, *,
     result = tick(harness.conn, harness.clock, llm_client)
     console.print(f"Detected: {result['new_items']}. Run(s) started: {result['runs']}.")
 
-    approval = harness.conn.execute(
-        "SELECT * FROM approvals ORDER BY requested_at DESC LIMIT 1"
+    requested_event = harness.conn.execute(
+        "SELECT detail FROM audit_log WHERE event = 'approval.requested' ORDER BY seq DESC LIMIT 1"
     ).fetchone()
+    requested_detail = json.loads(requested_event["detail"])
+    proposed_event = harness.conn.execute(
+        "SELECT detail FROM audit_log WHERE event = 'planner.proposed' ORDER BY seq DESC LIMIT 1"
+    ).fetchone()
+    summary_for_user = json.loads(proposed_event["detail"])["proposal"]["summary_for_user"]
     console.print(
-        f"Approval requested: [bold]{approval['approval_id']}[/bold], approver "
-        f"[cyan]{approval['approver_id']}[/cyan] (value threshold check passed)."
+        f"Approval requested: [bold]{requested_detail['approval_id']}[/bold], approver "
+        f"[cyan]{requested_detail['approver_id']}[/cyan] (value threshold check passed)."
     )
+    console.print(f'[italic]"{summary_for_user}"[/italic]')
     console.print("[dim]No answer today.[/dim]")
 
-    console.print("Ticking to the next day...")
-    tick_result = tick(harness.conn, harness.clock, llm_client)
-    if tick_result["escalated"]:
-        escalated = get_approval(harness.conn, approval["approval_id"])
+    # Escalation (if any) already ran inside that same tick, right before
+    # the clock advanced: the rule is "unanswered at end of day, approver
+    # out tomorrow," and a same-day request is itself eligible for that
+    # check without waiting for a further tick.
+    if result["escalated"]:
+        escalated_event = harness.conn.execute(
+            "SELECT detail FROM audit_log WHERE event = 'approval.escalated' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        escalated_detail = json.loads(escalated_event["detail"])
         console.print(
-            f"[yellow]Escalated[/yellow]: {approval['approver_id']} was out of office; "
-            f"routed to [cyan]{escalated['approver_id']}[/cyan]. Reason: {escalated['routed_reason']}"
+            f"[yellow]Escalated[/yellow]: {escalated_detail['from']} was out of office; "
+            f"routed to [cyan]{escalated_detail['to']}[/cyan]. Reason: {escalated_detail['reason']}"
         )
 
-    current_approval = get_approval(harness.conn, approval["approval_id"])
+    current_approval = get_approval(harness.conn, requested_detail["approval_id"])
     _decide_approval(console, harness.conn, harness.clock, llm_client, current_approval["approval_id"], interactive=interactive)
 
     instance = harness.conn.execute("SELECT status FROM workflow_instances").fetchone()
@@ -303,8 +315,8 @@ def run_failure_cases(console: Console, db_dir: Path) -> None:
     h.reset("scenario_a")
     llm = _reroute_llm()
     tick(h.conn, h.clock, llm)
-    approval = h.conn.execute("SELECT approval_id FROM approvals").fetchone()
-    decide(h.conn, h.clock, approval_id=approval["approval_id"], decided_by="u-101", decision="approved")
+    approval = h.conn.execute("SELECT approval_id, approver_id FROM approvals").fetchone()
+    decide(h.conn, h.clock, approval_id=approval["approval_id"], decided_by=approval["approver_id"], decision="approved")
     h.conn.execute(
         "UPDATE approvals SET plan_json = REPLACE(plan_json, '120', '999999') WHERE approval_id = ?",
         (approval["approval_id"],),

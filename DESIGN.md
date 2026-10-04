@@ -1,7 +1,9 @@
 # DESIGN.md
 
-Written in the first person, for the parts of the assignment I didn't build. Sections 1-3
-are required; 4 is required by Part 2; 5-6 are optional and kept brief.
+These are the parts of the assignment I didn't build, so I'm answering them directly here
+rather than pointing at code: identity and authorization, long-term memory, and scaling
+(sections 1-3) are required; section 4 is Part 2's own design question about the workflow
+engine. Sections 5 and 6 are optional, so I've kept them brief.
 
 ## 1. Identity and authorization
 
